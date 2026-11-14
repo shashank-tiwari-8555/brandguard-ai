@@ -1,18 +1,44 @@
 # Environment variables and secrets
 .env
 .env.*
+*.env
 !.env.example
+backend/.env
+frontend/.env
+frontend/.env.*
+!backend/.env.example
+!frontend/.env.example
+
+# Python virtual environments & bytecode
+.venv
+.venv/
+venv/
+backend/venv/
+__pycache__/
+backend/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# SQLite database files (preserve locally, do not commit production/runtime data)
+*.db
+*.sqlite
+*.sqlite3
+backend/inkloom.db
 
 # Dependencies
 node_modules/
+frontend/node_modules/
 
 # Build files
 dist/
 build/
+frontend/dist/
 .next/
 
 # Operating system
 .DS_Store
+**/.DS_Store
 
 # Deployment
 .vercel/

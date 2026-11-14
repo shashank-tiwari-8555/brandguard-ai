@@ -1,0 +1,279 @@
+
+/* =====================================
+   INKLOOM AI - CONTENT ANALYZER
+   Professional SaaS Dashboard Styling
+===================================== */
+
+.analyzer {
+  padding: 35px;
+  color: #f1f5f9;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.analyzer-header {
+  margin-bottom: 30px;
+  text-align: center;
+}
+
+.analyzer-header h1 {
+  font-size: 32px;
+  margin-bottom: 10px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.analyzer-header p,
+.analyzer-card p {
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.analyzer-card {
+  background: #172033;
+  border: 1px solid #29364d;
+  border-radius: 18px;
+  padding: 30px;
+  max-width: 900px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.analyzer-card h2 {
+  margin-bottom: 10px;
+}
+
+.analyzer-card textarea {
+  width: 100%;
+  min-height: 220px;
+  margin-top: 20px;
+  padding: 18px;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: white;
+  font-size: 15px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.analyzer-card textarea:focus {
+  outline: 2px solid #6366f1;
+}
+
+.analyzer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 20px;
+  gap: 15px;
+}
+
+.analyzer-actions span {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.analyzer-actions button {
+  background: #6366f1;
+  color: white;
+  border: none;
+  padding: 13px 22px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: 0.2s;
+}
+
+.analyzer-actions button:hover {
+  background: #4f46e5;
+  transform: translateY(-2px);
+}
+
+.analyzer-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ANALYSIS RESULTS */
+
+.analysis-results {
+  margin: 35px auto;
+  max-width: 900px;
+  animation: fadeIn 0.4s ease-in;
+}
+
+.analysis-results h2 {
+  font-size: 25px;
+  margin-bottom: 22px;
+  color: #f8fafc;
+}
+
+.result-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 30px;
+}
+
+.result-box {
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  padding: 24px;
+  text-align: center;
+  transition: 0.2s;
+}
+
+.result-box:hover {
+  border-color: #6366f1;
+  transform: translateY(-3px);
+}
+
+.result-box h3 {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 12px;
+}
+
+.result-box p {
+  font-size: 28px;
+  font-weight: 700;
+  color: #a5b4fc;
+  margin: 0;
+}
+
+/* DETECTED ISSUES */
+
+.analysis-results h3 {
+  margin: 25px 0 15px;
+  color: #f1f5f9;
+}
+
+.issue-card {
+  background: #172033;
+  border: 1px solid #334155;
+  border-left: 4px solid #f59e0b;
+  border-radius: 12px;
+  padding: 22px;
+  margin-bottom: 16px;
+  transition: 0.2s;
+}
+
+.issue-card:hover {
+  border-color: #6366f1;
+}
+
+.issue-card h4 {
+  color: #fbbf24;
+  font-size: 17px;
+  margin-bottom: 15px;
+}
+
+.issue-card p {
+  color: #cbd5e1;
+  line-height: 1.7;
+  margin: 9px 0;
+}
+
+.issue-card strong {
+  color: #a5b4fc;
+}
+
+.no-issues-card {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 12px;
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+.no-issues-card p {
+  color: #34d399 !important;
+  font-size: 15px;
+  font-weight: 500;
+  margin: 0;
+}
+
+/* SUGGESTED REVISION */
+
+.revision-box {
+  background: #172b35;
+  border: 1px solid #10b981;
+  border-radius: 14px;
+  padding: 24px;
+  margin-top: 28px;
+}
+
+.revision-box h3 {
+  color: #34d399;
+  margin-top: 0;
+}
+
+.revision-box p {
+  color: #d1fae5;
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+/* ANIMATION */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* RESPONSIVE DESIGN */
+
+@media (max-width: 650px) {
+  .analyzer {
+    padding: 18px;
+  }
+
+  .analyzer-card {
+    padding: 20px;
+  }
+
+  .result-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .analyzer-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .analyzer-actions button {
+    width: 100%;
+  }
+
+  .analyzer-header h1 {
+    font-size: 26px;
+  }
+}
+.copy-revision-btn {
+    background: #10b981;
+    color: white;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 8px;
+    margin-top: 15px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: 0.2s;
+}
+
+.copy-revision-btn:hover {
+    background: #059669;
+    transform: translateY(-2px);
+}

@@ -1,0 +1,975 @@
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Literal
+from contextlib import contextmanager
+from pathlib import Path
+from datetime import datetime, timezone
+from dotenv import load_dotenv
+from groq import Groq
+
+import sqlite3
+import json
+import re
+import os
+import logging
+
+
+# ==========================================
+# 1. FASTAPI CONFIGURATION
+# ==========================================
+
+app = FastAPI(title="Inkloom AI API")
+
+# Default local origins plus dynamic environment-configured origins (e.g. Vercel URL)
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+
+env_cors = os.getenv("CORS_ORIGINS") or os.getenv("ALLOWED_ORIGINS") or ""
+custom_cors_origins = [origin.strip() for origin in env_cors.split(",") if origin.strip()]
+ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_CORS_ORIGINS + custom_cors_origins))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.vercel\.app$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ==========================================
+# 2. GROQ AI CONFIGURATION
+# ==========================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+load_dotenv(BASE_DIR / ".env")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    logger.warning("GROQ_API_KEY not found in backend/.env. AI features will use rule-based fallback.")
+    client = None
+else:
+    client = Groq(api_key=GROQ_API_KEY)
+
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+# ==========================================
+# 3. DATABASE CONFIGURATION
+# ==========================================
+
+DB_PATH = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "inkloom.db")))
+
+
+@contextmanager
+def get_db_connection():
+
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+
+    try:
+        yield connection
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+
+def init_db():
+
+    with get_db_connection() as connection:
+
+        # Existing analysis database
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_content TEXT NOT NULL,
+                risk_score INTEGER,
+                risk_level TEXT,
+                total_issues INTEGER,
+                issues_json TEXT,
+                suggested_revision TEXT,
+                approval_status TEXT DEFAULT 'Pending',
+                created_at TEXT
+            )
+        """)
+
+        # Brand Guidelines database
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS brand_guidelines (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                brand_name TEXT DEFAULT '',
+                brand_description TEXT DEFAULT '',
+                tone_of_voice TEXT DEFAULT '',
+                target_audience TEXT DEFAULT '',
+                preferred_words TEXT DEFAULT '',
+                prohibited_words TEXT DEFAULT '',
+                writing_rules TEXT DEFAULT '',
+                visual_guidelines TEXT DEFAULT '',
+                additional_rules TEXT DEFAULT '',
+                updated_at TEXT
+            )
+        """)
+
+        # Create default brand profile
+        connection.execute("""
+            INSERT OR IGNORE INTO brand_guidelines (
+                id,
+                updated_at
+            )
+            VALUES (1, ?)
+        """, (
+            datetime.now(timezone.utc).isoformat(),
+        ))
+
+
+init_db()
+
+
+# ==========================================
+# 4. REQUEST MODELS
+# ==========================================
+
+class AnalysisRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class ApprovalRequest(BaseModel):
+    status: Literal["Approved", "Rejected"]
+
+
+class BrandGuidelinesRequest(BaseModel):
+
+    brand_name: str = ""
+    brand_description: str = ""
+    tone_of_voice: str = ""
+    target_audience: str = ""
+    preferred_words: str = ""
+    prohibited_words: str = ""
+    writing_rules: str = ""
+    visual_guidelines: str = ""
+    additional_rules: str = ""
+
+
+# ==========================================
+# 5. BRAND GUIDELINES HELPERS
+# ==========================================
+
+BRAND_GUIDELINE_FIELDS = [
+    "brand_name",
+    "brand_description",
+    "tone_of_voice",
+    "target_audience",
+    "preferred_words",
+    "prohibited_words",
+    "writing_rules",
+    "visual_guidelines",
+    "additional_rules"
+]
+
+
+def get_saved_brand_guidelines():
+
+    with get_db_connection() as connection:
+
+        row = connection.execute("""
+            SELECT *
+            FROM brand_guidelines
+            WHERE id = 1
+        """).fetchone()
+
+    if row is None:
+        return {
+            field: ""
+            for field in BRAND_GUIDELINE_FIELDS
+        }
+
+    return {
+        field: row[field] or ""
+        for field in BRAND_GUIDELINE_FIELDS
+    }
+
+
+def build_brand_guidelines_prompt(guidelines):
+
+    sections = []
+
+    labels = {
+        "brand_name": "Brand name",
+        "brand_description": "Brand description",
+        "tone_of_voice": "Tone of voice",
+        "target_audience": "Target audience",
+        "preferred_words": "Preferred words or phrases",
+        "prohibited_words": "Words or phrases to avoid",
+        "writing_rules": "Writing rules",
+        "visual_guidelines": "Visual identity guidelines",
+        "additional_rules": "Additional brand rules"
+    }
+
+    for field in BRAND_GUIDELINE_FIELDS:
+
+        value = guidelines.get(field, "")
+
+        if value and value.strip():
+
+            sections.append(
+                f"{labels[field]}: {value.strip()}"
+            )
+
+    if not sections:
+
+        return (
+            "No custom brand guidelines have been saved. "
+            "Follow the general honesty, transparency and "
+            "non-fabrication rules in this system prompt."
+        )
+
+    return "\n".join(sections)
+
+
+# ==========================================
+# 6. GROQ AI BRAND GOVERNANCE AND REWRITING
+# ==========================================
+
+def extract_json_response(raw_text: str) -> dict:
+
+    text = (raw_text or "").strip()
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    match = re.search(r"(\{.*\})", text, re.DOTALL)
+
+    if match:
+        return json.loads(match.group(1))
+
+    return json.loads(text)
+
+
+def merge_compliance_issues(rule_issues: list, ai_issues: list) -> list:
+
+    merged = list(rule_issues)
+
+    for ai_issue in ai_issues:
+
+        ai_claim = (ai_issue.get("claim") or "").strip().lower()
+        ai_type = (ai_issue.get("type") or "").strip().lower()
+
+        matched = False
+
+        for r_issue in merged:
+
+            r_claim = (r_issue.get("claim") or "").strip().lower()
+            r_type = (r_issue.get("type") or "").strip().lower()
+
+            if ai_claim and r_claim and (ai_claim in r_claim or r_claim in ai_claim):
+
+                if (
+                    ai_type == r_type
+                    or ("prohibit" in ai_type and "prohibit" in r_type)
+                    or ("guarantee" in ai_type and "guarantee" in r_type)
+                    or ("superior" in ai_type and "superior" in r_type)
+                ):
+                    if len(ai_issue.get("explanation", "")) > len(r_issue.get("explanation", "")):
+                        r_issue["explanation"] = ai_issue["explanation"]
+
+                    if ai_issue.get("recommendation"):
+                        r_issue["recommendation"] = ai_issue["recommendation"]
+
+                    matched = True
+                    break
+
+        if not matched:
+
+            sev = str(ai_issue.get("severity", "Medium")).capitalize()
+            if sev not in ["High", "Medium", "Low"]:
+                sev = "Medium"
+
+            merged.append({
+                "type": str(ai_issue.get("type") or "Brand Guideline Violation"),
+                "claim": str(ai_issue.get("claim") or "General ad copy"),
+                "explanation": str(ai_issue.get("explanation") or "Violates active brand guidelines."),
+                "severity": sev,
+                "recommendation": str(ai_issue.get("recommendation") or "Review and align with brand guidelines.")
+            })
+
+    return merged
+
+
+def analyze_with_groq_and_rewrite(
+    content: str,
+    guidelines: dict,
+    rule_issues: list
+) -> tuple[list, str, str]:
+
+    if not client or not GROQ_API_KEY:
+        logger.info("Groq client not configured; using transparent rule-based fallback.")
+        brand_name = (guidelines.get("brand_name") or "").strip() or "Our product"
+        fallback_revision = (
+            f"{brand_name} is designed to help customers achieve their goals through reliable, "
+            "transparent solutions. Performance and results may vary depending on individual circumstances. "
+            "Please review the applicable product information and offer terms."
+        )
+        return [], fallback_revision, "Rule-based fallback"
+
+    brand_guidelines_text = build_brand_guidelines_prompt(guidelines)
+
+    has_custom_guidelines = any(
+        (guidelines.get(field) or "").strip()
+        for field in BRAND_GUIDELINE_FIELDS
+    )
+
+    if has_custom_guidelines:
+
+        guidelines_section = f"""ACTIVE BRAND GUIDELINES:
+{brand_guidelines_text}
+
+EVALUATION CRITERIA:
+1. Brand Tone of Voice: Check if the advertisement voice reflects the saved tone of voice and avoid forbidden or conflicting tones (e.g. hype, aggressive, sensational, pushy, casual vs formal).
+2. Target Audience Alignment: Ensure messaging is appropriately framed for the specified target audience and personas.
+3. Vocabulary Governance:
+   - Identify any prohibited words, blacklisted phrases, or forbidden claims.
+   - Note if preferred words or approved phrases should be integrated.
+4. Writing Rules: Verify compliance with specified writing standards, sentence structure, active voice, and verification requirements.
+5. Visual Identity Guidelines: Check references to visual elements, brand colors, typography, or styling for compliance where applicable.
+6. Additional Brand Rules: Verify all mandatory disclaimers, trademark notices, and special compliance rules.
+7. Truth-in-Advertising Standards: Detect unrealistic guarantees, unverified superiority, unverified performance statistics, artificial urgency, and unverified discounts.
+8. Risk vs Deception Distinction: Distinguish potentially risky claims (e.g. comparative or performance claims that lack cited benchmark proof; assign Medium or Low severity) from outright deceptive, impossible, or prohibited claims (e.g. absolute guarantees, zero-risk claims, or explicitly blacklisted vocabulary; assign High severity)."""
+
+    else:
+
+        guidelines_section = """BRAND GUIDELINES:
+No custom brand guidelines have been configured. Apply standard truth-in-advertising and fair marketing principles:
+1. Identify unsupported absolute guarantees (e.g., "100% guarantee", "zero risk", "never fail").
+2. Identify unverified superiority claims (e.g., "#1", "world's best", "leading product").
+3. Identify unverified numerical performance claims and statistics.
+4. Identify artificial urgency and unverified discount claims.
+5. Ensure a professional, transparent, and trustworthy tone.
+6. Distinguish potentially risky claims (requiring benchmark evidence) from outright false or prohibited promises."""
+
+    system_prompt = f"""You are an expert advertisement compliance and brand governance assistant working for Inkloom AI.
+
+Your task is to analyze advertisement copy for compliance with brand guidelines and truth-in-advertising regulations, identify all issues with clear explanations, and generate a corrected suggested revision.
+
+{guidelines_section}
+
+STRICT INSTRUCTIONS:
+1. Analyze the advertisement text thoroughly against all the above criteria.
+2. For each detected brand violation or compliance issue, return:
+   - "type": Category (e.g. "Tone of Voice Mismatch", "Prohibited Brand Term", "Target Audience Disconnect", "Writing Rule Violation", "Visual Guideline Issue", "Brand Rule Violation", "Unrealistic Guarantee", "Unsubstantiated Superiority Claim", "Unsubstantiated Performance Claim", "Artificial Urgency", or "Unverified Discount Claim").
+   - "claim": Exact excerpt from the advertisement.
+   - "explanation": Clear, detailed explanation specifically citing the brand guideline or compliance rule violated.
+   - "severity": "High", "Medium", or "Low".
+   - "recommendation": Actionable correction guidance based on brand guidelines.
+3. Provide a "suggested_revision" that rewrites the advertisement into an honest, persuasive, and brand-aligned version. It must:
+   - Strictly follow the brand tone, target audience, and writing rules.
+   - Incorporate preferred words and phrases naturally.
+   - Purge all prohibited words, false guarantees, and unverified claims.
+   - Never fabricate statistics, user counts, or offer terms.
+4. If the advertisement is already fully compliant and matches all brand guidelines, return an empty "issues" list and return the advertisement as the suggested_revision.
+5. Return ONLY a valid JSON object matching this structure with no markdown wrapper or extra text:
+{{
+  "issues": [
+    {{
+      "type": "string",
+      "claim": "string",
+      "explanation": "string",
+      "severity": "High",
+      "recommendation": "string"
+    }}
+  ],
+  "suggested_revision": "string"
+}}"""
+
+    user_prompt = f"""Analyze the following advertisement copy:
+
+ORIGINAL ADVERTISEMENT:
+\"\"\"{content}\"\"\"
+
+PRE-DETECTED RULE-BASED FLAGS:
+{json.dumps([{"type": i["type"], "claim": i["claim"]} for i in rule_issues], indent=2)}
+
+Perform a complete brand governance evaluation and return the JSON object."""
+
+    try:
+
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt
+                }
+            ],
+            temperature=0.2,
+            max_completion_tokens=2000
+        )
+
+        response_content = completion.choices[0].message.content
+
+        if not response_content or not response_content.strip():
+            raise ValueError("Groq returned an empty response.")
+
+        parsed = extract_json_response(response_content)
+        ai_issues = parsed.get("issues", [])
+        suggested_revision = (parsed.get("suggested_revision") or "").strip()
+
+        if not suggested_revision:
+            raise ValueError("Groq did not provide a suggested revision.")
+
+        valid_ai_issues = []
+        for issue in ai_issues:
+            if isinstance(issue, dict) and "claim" in issue and "explanation" in issue:
+                sev = str(issue.get("severity", "Medium")).capitalize()
+                if sev not in ["High", "Medium", "Low"]:
+                    sev = "Medium"
+                valid_ai_issues.append({
+                    "type": str(issue.get("type", "Brand Guideline Violation")),
+                    "claim": str(issue.get("claim", "")),
+                    "explanation": str(issue.get("explanation", "")),
+                    "severity": sev,
+                    "recommendation": str(issue.get("recommendation", "Align with brand guidelines."))
+                })
+
+        return valid_ai_issues, suggested_revision, "Groq AI"
+
+    except Exception:
+
+        logger.exception("Groq advertisement analysis/rewriting failed.")
+
+        brand_name = (guidelines.get("brand_name") or "").strip() or "Our product"
+        fallback_revision = (
+            f"{brand_name} is designed to help customers achieve their goals through reliable, "
+            "transparent solutions. Performance and results may vary depending on individual circumstances. "
+            "Please review the applicable product information and offer terms."
+        )
+
+        return [], fallback_revision, "Rule-based fallback"
+
+
+def generate_suggested_revision(content, issues):
+
+    guidelines = get_saved_brand_guidelines()
+    _, revision, source = analyze_with_groq_and_rewrite(content, guidelines, issues)
+    return revision, source
+
+
+# ==========================================
+# 7. HOME AND HEALTH ROUTES
+# ==========================================
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "Welcome to Inkloom AI Backend!",
+        "status": "Running successfully"
+    }
+
+
+@app.get("/health")
+def health():
+
+    return {
+        "status": "healthy",
+        "groq_configured": bool(GROQ_API_KEY)
+    }
+
+
+# ==========================================
+# 8. BRAND GUIDELINES API
+# ==========================================
+
+@app.get("/brand-guidelines")
+def get_brand_guidelines():
+
+    guidelines = get_saved_brand_guidelines()
+
+    with get_db_connection() as connection:
+
+        row = connection.execute("""
+            SELECT updated_at
+            FROM brand_guidelines
+            WHERE id = 1
+        """).fetchone()
+
+    return {
+        "status": "success",
+        "guidelines": guidelines,
+        "updated_at": row["updated_at"] if row else None
+    }
+
+
+@app.put("/brand-guidelines")
+def save_brand_guidelines(request: BrandGuidelinesRequest):
+
+    guidelines = request.model_dump()
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    with get_db_connection() as connection:
+
+        connection.execute("""
+            INSERT INTO brand_guidelines (
+                id,
+                brand_name,
+                brand_description,
+                tone_of_voice,
+                target_audience,
+                preferred_words,
+                prohibited_words,
+                writing_rules,
+                visual_guidelines,
+                additional_rules,
+                updated_at
+            )
+
+            VALUES (
+                1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+
+            ON CONFLICT(id) DO UPDATE SET
+
+                brand_name = excluded.brand_name,
+                brand_description = excluded.brand_description,
+                tone_of_voice = excluded.tone_of_voice,
+                target_audience = excluded.target_audience,
+                preferred_words = excluded.preferred_words,
+                prohibited_words = excluded.prohibited_words,
+                writing_rules = excluded.writing_rules,
+                visual_guidelines = excluded.visual_guidelines,
+                additional_rules = excluded.additional_rules,
+                updated_at = excluded.updated_at
+
+        """, (
+
+            guidelines["brand_name"],
+            guidelines["brand_description"],
+            guidelines["tone_of_voice"],
+            guidelines["target_audience"],
+            guidelines["preferred_words"],
+            guidelines["prohibited_words"],
+            guidelines["writing_rules"],
+            guidelines["visual_guidelines"],
+            guidelines["additional_rules"],
+            updated_at
+
+        ))
+
+    return {
+        "status": "success",
+        "message": "Brand guidelines saved successfully.",
+        "guidelines": guidelines,
+        "updated_at": updated_at
+    }
+
+
+# ==========================================
+# 9. ADVERTISEMENT ANALYSIS
+# ==========================================
+
+@app.post("/analyze")
+def analyze_content(request: AnalysisRequest):
+
+    content = request.content.strip()
+
+    if not content:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide advertisement content."
+        )
+
+    text = content.lower()
+
+    # 1. FETCH SAVED BRAND GUIDELINES
+    guidelines = get_saved_brand_guidelines()
+
+    rule_issues = []
+
+    def add_issue(
+        pattern,
+        issue_type,
+        explanation,
+        severity,
+        recommendation
+    ):
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+
+            rule_issues.append({
+
+                "type": issue_type,
+
+                "claim": match.group(0),
+
+                "explanation": explanation,
+
+                "severity": severity,
+
+                "recommendation": recommendation
+
+            })
+
+    # 2. CHECK PROHIBITED WORDS FROM BRAND GUIDELINES
+    prohibited_raw = (guidelines.get("prohibited_words") or "").strip()
+
+    if prohibited_raw:
+
+        prohibited_terms = [
+            t.strip()
+            for t in re.split(r"[,;\n]+", prohibited_raw)
+            if t.strip()
+        ]
+
+        for term in prohibited_terms:
+
+            pattern = r"\b" + re.escape(term) + r"\b"
+
+            match = re.search(pattern, text, re.IGNORECASE)
+
+            if match:
+
+                rule_issues.append({
+
+                    "type": "Prohibited Brand Term",
+
+                    "claim": match.group(0),
+
+                    "explanation": f"The advertisement uses '{match.group(0)}', which is explicitly prohibited by your brand guidelines.",
+
+                    "severity": "High",
+
+                    "recommendation": "Remove or replace this prohibited term with approved brand vocabulary."
+
+                })
+
+    # 3. RULE-BASED COMPLIANCE CHECKS
+    # Unrealistic Guarantees
+    add_issue(
+        r"100\s*%|guarantee(?:d|s)?|risk[- ]free|zero risk|never fail",
+        "Unrealistic Guarantee",
+        "The advertisement makes an absolute promise that may require substantial supporting evidence.",
+        "High",
+        "Avoid promising guaranteed results unless they can be substantiated."
+    )
+
+    # Superiority Claims
+    add_issue(
+        r"#\s*1\b|number\s+one|no\.?\s*1\b|best in the world|world['’]s best|leading product",
+        "Unsubstantiated Superiority Claim",
+        "The advertisement claims superiority without providing comparative evidence.",
+        "Medium",
+        "Provide reliable comparative evidence or use more balanced wording."
+    )
+
+    # Performance Claims
+    add_issue(
+        r"\b\d+(?:\.\d+)?\s*x\s+(?:more|better|faster|higher|greater|productive)\b|\b\d+\s*%\s*(?:more|better|faster|higher|improvement|increase)",
+        "Unsubstantiated Performance Claim",
+        "The advertisement uses numerical performance claims that may require measurable supporting evidence.",
+        "Medium",
+        "Provide credible test results and evidence supporting the stated performance improvement."
+    )
+
+    # Social Proof
+    add_issue(
+        r"\b(?:thousands|millions|billions|hundreds)\s+of\s+(?:happy\s+)?customers\b|\b\d[\d,]*\s+(?:happy\s+)?customers\b",
+        "Unverified Social Proof",
+        "The advertisement uses customer numbers or popularity claims without providing supporting evidence.",
+        "Medium",
+        "Provide verifiable customer data or use appropriately qualified statements."
+    )
+
+    # Artificial Urgency
+    add_issue(
+        r"limited time|act now|last chance|once.in.a.lifetime|only for the next \d+\s*(?:hours?|days?)|offer expires|hurry up",
+        "Artificial Urgency",
+        "The advertisement creates urgency or scarcity that should be supported by genuine offer conditions.",
+        "Medium",
+        "Ensure promotional deadlines are genuine and clearly communicate the applicable terms."
+    )
+
+    # Discount Claims
+    add_issue(
+        r"\b\d{1,3}\s*%\s*off\b",
+        "Unverified Discount Claim",
+        "The advertised discount may require evidence of the original price and applicable offer conditions.",
+        "Medium",
+        "Verify the reference price, discount calculation and offer terms."
+    )
+
+    # 4. GROQ AI DEEP BRAND & COMPLIANCE EVALUATION
+    ai_issues, suggested_revision, revision_source = (
+        analyze_with_groq_and_rewrite(
+            content,
+            guidelines,
+            rule_issues
+        )
+    )
+
+    # 5. MERGE RULE-BASED AND AI ISSUES
+    issues = merge_compliance_issues(rule_issues, ai_issues)
+
+    # ==========================================
+    # 10. RISK SCORE CALCULATION
+    # ==========================================
+
+    severity_weights = {
+        "High": 30,
+        "Medium": 20,
+        "Low": 10
+    }
+
+    risk_score = min(
+        sum(
+            severity_weights.get(issue["severity"], 20)
+            for issue in issues
+        ),
+        100
+    )
+
+    if risk_score >= 60:
+        risk_level = "High"
+    elif risk_score >= 25:
+        risk_level = "Medium"
+    else:
+        risk_level = "Low"
+
+    # ==========================================
+    # 11. SAVE ANALYSIS TO DATABASE
+    # ==========================================
+
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    approval_status = (
+        "Pending" if issues else "Not Required"
+    )
+
+    with get_db_connection() as connection:
+
+        cursor = connection.execute("""
+            INSERT INTO analyses (
+                original_content,
+                risk_score,
+                risk_level,
+                total_issues,
+                issues_json,
+                suggested_revision,
+                approval_status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            content,
+            risk_score,
+            risk_level,
+            len(issues),
+            json.dumps(issues),
+            suggested_revision,
+            approval_status,
+            created_at
+        ))
+
+        analysis_id = cursor.lastrowid
+
+    return {
+
+        "message": "Advertisement analysis completed!",
+
+        "status": "success",
+
+        "analysis_id": analysis_id,
+
+        "original_content": content,
+
+        "risk_score": risk_score,
+
+        "risk_level": risk_level,
+
+        "total_issues": len(issues),
+
+        "issues": issues,
+
+        "suggested_revision": suggested_revision,
+
+        "revision_source": revision_source,
+
+        "approval_status": approval_status,
+
+        "created_at": created_at
+
+    }
+
+
+# ==========================================
+# 13. HISTORY API
+# ==========================================
+
+@app.get("/history")
+def get_history():
+
+    with get_db_connection() as connection:
+
+        rows = connection.execute("""
+
+            SELECT *
+            FROM analyses
+            ORDER BY id DESC
+
+        """).fetchall()
+
+    history = []
+
+    for row in rows:
+
+        item = dict(row)
+
+        item["issues"] = json.loads(
+            item.pop("issues_json") or "[]"
+        )
+
+        history.append(item)
+
+    return {
+
+        "status": "success",
+
+        "total": len(history),
+
+        "history": history
+
+    }
+
+
+# ==========================================
+# 14. APPROVALS API
+# ==========================================
+
+@app.get("/approvals")
+def get_approvals():
+
+    with get_db_connection() as connection:
+
+        rows = connection.execute("""
+
+            SELECT *
+            FROM analyses
+            WHERE approval_status = 'Pending'
+            ORDER BY id DESC
+
+        """).fetchall()
+
+    approvals = []
+
+    for row in rows:
+
+        item = dict(row)
+
+        item["issues"] = json.loads(
+            item.pop("issues_json") or "[]"
+        )
+
+        approvals.append(item)
+
+    return {
+
+        "status": "success",
+
+        "total": len(approvals),
+
+        "approvals": approvals
+
+    }
+
+
+# ==========================================
+# 15. UPDATE APPROVAL STATUS
+# ==========================================
+
+@app.patch("/approvals/{analysis_id}")
+def update_approval(
+
+    analysis_id: int,
+
+    request: ApprovalRequest
+
+):
+
+    with get_db_connection() as connection:
+
+        cursor = connection.execute("""
+
+            UPDATE analyses
+
+            SET approval_status = ?
+
+            WHERE id = ?
+
+            AND approval_status = 'Pending'
+
+        """, (
+
+            request.status,
+
+            analysis_id
+
+        ))
+
+        if cursor.rowcount == 0:
+
+            raise HTTPException(
+
+                status_code=404,
+
+                detail="Pending analysis not found."
+
+            )
+
+    return {
+
+        "status": "success",
+
+        "message": f"Analysis {request.status.lower()} successfully.",
+
+        "analysis_id": analysis_id,
+
+        "approval_status": request.status
+
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run("main:app", host=host, port=port, reload=False)
+
