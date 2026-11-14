@@ -19,7 +19,7 @@ import logging
 try:
     from rapidocr_onnxruntime import RapidOCR
     ocr_engine = RapidOCR()
-except Exception as e:
+except Exception:
     ocr_engine = None
 
 
@@ -310,14 +310,24 @@ def extract_json_response(raw_text: str) -> dict:
 
     text = (raw_text or "").strip()
 
-    if text.startswith("```"):
+    if "```" in text:
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
 
     match = re.search(r"(\{.*\})", text, re.DOTALL)
+    candidate = match.group(1) if match else text
 
-    if match:
-        return json.loads(match.group(1))
+    try:
+        return json.loads(candidate)
+    except Exception:
+        pass
+
+    # Remove trailing commas before closing braces/brackets
+    cleaned = re.sub(r",\s*([\}\]])", r"\1", candidate)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
 
     return json.loads(text)
 
@@ -482,7 +492,7 @@ Perform a complete brand governance evaluation and return the JSON object."""
                 }
             ],
             temperature=0.2,
-            max_completion_tokens=2000
+            max_completion_tokens=4000
         )
 
         response_content = completion.choices[0].message.content
