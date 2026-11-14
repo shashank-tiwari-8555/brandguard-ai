@@ -15,13 +15,16 @@ import {
   IconHistory,
   IconSettings,
   IconSparkles,
-  IconShield
+  IconShield,
+  IconMenu,
+  IconX
 } from "./components/Icons";
 
 export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
   const [activeBrandName, setActiveBrandName] = useState("Inkloom AI");
   const [systemHealthy, setSystemHealthy] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Poll backend health and active brand guidelines once on mount
   useEffect(() => {
@@ -52,18 +55,32 @@ export default function App() {
   }, [activePage]);
 
   const menuItems = [
-    { name: "Dashboard", label: "Dashboard", Icon: IconDashboard },
-    { name: "Content Analyzer", label: "Content Analyzer", Icon: IconAnalyzer },
-    { name: "Brand Guidelines", label: "Brand Guidelines", Icon: IconBrand },
-    { name: "Approvals", label: "Approval Center", Icon: IconApprovals },
-    { name: "History", label: "Analysis History", Icon: IconHistory },
-    { name: "Settings", label: "Settings", Icon: IconSettings }
+    { name: "Dashboard", label: "Dashboard", Icon: IconDashboard, hint: "Overview & Metrics" },
+    { name: "Content Analyzer", label: "Content Analyzer", Icon: IconAnalyzer, hint: "Text & Poster OCR" },
+    { name: "Brand Guidelines", label: "Brand Guidelines", Icon: IconBrand, hint: "Voice & Prohibited Terms" },
+    { name: "Approvals", label: "Approval Center", Icon: IconApprovals, hint: "Compliance Review" },
+    { name: "History", label: "Analysis History", Icon: IconHistory, hint: "Audit Trail" },
+    { name: "Settings", label: "Settings", Icon: IconSettings, hint: "System Diagnostics" }
   ];
+
+  const handleNavClick = (pageName) => {
+    setActivePage(pageName);
+    setMobileMenuOpen(false);
+  };
 
   return (
     <div className="app-layout">
+      {/* Mobile Drawer Backdrop */}
+      {mobileMenuOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar */}
-      <aside className="enterprise-sidebar">
+      <aside className={`enterprise-sidebar ${mobileMenuOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-brand">
           <div className="brand-icon-box">
             <IconSparkles size={18} className="brand-logo-icon" />
@@ -72,10 +89,18 @@ export default function App() {
             <h2>Inkloom AI</h2>
             <span>Brand Governance</span>
           </div>
+          <button
+            type="button"
+            className="btn-close-mobile-nav"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="Close navigation"
+          >
+            <IconX size={18} />
+          </button>
         </div>
 
         <nav className="sidebar-nav">
-          <span className="nav-section-title">Platform</span>
+          <span className="nav-section-title">Platform Modules</span>
           {menuItems.map((item) => {
             const Icon = item.Icon;
             const isActive = activePage === item.name;
@@ -84,10 +109,15 @@ export default function App() {
                 key={item.name}
                 type="button"
                 className={`sidebar-nav-item ${isActive ? "active" : ""}`}
-                onClick={() => setActivePage(item.name)}
+                onClick={() => handleNavClick(item.name)}
               >
-                <Icon size={18} className="nav-item-icon" />
-                <span className="nav-item-label">{item.label}</span>
+                <div className="nav-item-icon-box">
+                  <Icon size={17} className="nav-item-icon" />
+                </div>
+                <div className="nav-item-label-group">
+                  <span className="nav-item-label">{item.label}</span>
+                  <span className="nav-item-hint">{item.hint}</span>
+                </div>
                 {isActive && <span className="active-indicator"></span>}
               </button>
             );
@@ -95,12 +125,14 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="system-status-indicator">
-            <span className={`status-orb ${systemHealthy ? "orb-healthy" : "orb-offline"}`}></span>
-            <div className="status-text-wrap">
-              <strong>{systemHealthy ? "Groq AI Online" : "Service Offline"}</strong>
-              <small>v1.0 Enterprise</small>
+          <div className="governance-status-card">
+            <div className="status-header">
+              <span className={`status-orb ${systemHealthy ? "orb-healthy" : "orb-offline"}`}></span>
+              <strong>{systemHealthy ? "Groq AI Online" : "Service Degraded"}</strong>
             </div>
+            <p className="governance-brand-note">
+              Governing: <strong title={activeBrandName}>{activeBrandName || "Default Brand"}</strong>
+            </p>
           </div>
         </div>
       </aside>
@@ -109,23 +141,39 @@ export default function App() {
       <div className="main-viewport">
         {/* Top Navbar */}
         <header className="top-navbar">
-          <div className="navbar-breadcrumb">
-            <span className="nav-org-tag">Organization</span>
-            <span className="nav-divider">/</span>
-            <strong className="nav-current-title">{activePage}</strong>
+          <div className="navbar-left">
+            <button
+              type="button"
+              className="btn-mobile-menu"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              aria-label="Toggle menu"
+            >
+              <IconMenu size={20} />
+            </button>
+
+            <div className="navbar-breadcrumb">
+              <span className="nav-org-tag">Organization</span>
+              <span className="nav-divider">/</span>
+              <strong className="nav-current-title">{activePage}</strong>
+            </div>
           </div>
 
           <div className="navbar-actions">
-            <div className="governance-pill" title="Currently active brand guidelines">
+            <button
+              type="button"
+              className="governance-pill"
+              onClick={() => handleNavClick("Brand Guidelines")}
+              title="Click to view or edit active brand guidelines"
+            >
               <IconShield size={14} className="pill-shield" />
               <span>Governed by: <strong>{activeBrandName || "Default Brand"}</strong></span>
-            </div>
+            </button>
 
             {activePage !== "Content Analyzer" && (
               <button
                 type="button"
                 className="btn-nav-analyze"
-                onClick={() => setActivePage("Content Analyzer")}
+                onClick={() => handleNavClick("Content Analyzer")}
               >
                 <IconAnalyzer size={15} />
                 <span>+ Analyze Copy</span>
@@ -137,7 +185,7 @@ export default function App() {
         {/* View Router */}
         <main className="content-container">
           {activePage === "Dashboard" && (
-            <Dashboard onNavigate={setActivePage} />
+            <Dashboard onNavigate={handleNavClick} />
           )}
 
           {activePage === "Content Analyzer" && (
@@ -157,7 +205,7 @@ export default function App() {
           )}
 
           {activePage === "Settings" && (
-            <Settings onNavigate={setActivePage} />
+            <Settings onNavigate={handleNavClick} />
           )}
         </main>
       </div>

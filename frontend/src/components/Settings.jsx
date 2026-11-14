@@ -88,8 +88,8 @@ export default function Settings({ onNavigate }) {
           onClick={loadSettingsData}
           disabled={loading}
         >
-          <IconRefresh size={15} />
-          <span>Refresh</span>
+          <IconRefresh size={15} className={loading ? "spin-icon" : ""} />
+          <span>{loading ? "Refreshing..." : "Refresh"}</span>
         </button>
       </div>
 

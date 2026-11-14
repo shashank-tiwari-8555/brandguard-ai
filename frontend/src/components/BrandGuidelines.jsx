@@ -261,9 +261,10 @@ function BrandGuidelines() {
             type="button"
             className="btn-secondary"
             onClick={fetchGuidelines}
+            disabled={loading}
             title="Reload from backend"
           >
-            <IconRefresh size={14} /> Refresh
+            <IconRefresh size={14} className={loading ? "spin-icon" : ""} /> {loading ? "Reloading..." : "Refresh"}
           </button>
           <button
             type="button"

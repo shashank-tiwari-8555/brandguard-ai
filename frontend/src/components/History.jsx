@@ -104,8 +104,8 @@ export default function History() {
           disabled={loading}
           title="Reload history records"
         >
-          <IconRefresh size={15} />
-          <span>Refresh</span>
+          <IconRefresh size={15} className={loading ? "spin-icon" : ""} />
+          <span>{loading ? "Refreshing..." : "Refresh"}</span>
         </button>
       </div>
 

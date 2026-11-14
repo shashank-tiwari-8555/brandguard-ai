@@ -180,8 +180,8 @@ export default function Dashboard({ onNavigate }) {
             disabled={loading}
             title="Refresh metrics from backend"
           >
-            <IconRefresh size={15} />
-            <span>Refresh</span>
+            <IconRefresh size={15} className={loading ? "spin-icon" : ""} />
+            <span>{loading ? "Refreshing..." : "Refresh"}</span>
           </button>
           <button
             type="button"

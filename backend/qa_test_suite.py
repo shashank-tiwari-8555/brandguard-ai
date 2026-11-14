@@ -55,16 +55,18 @@ def test_brand_guidelines_get():
 def test_brand_guidelines_put():
     # Fetch current
     curr = client.get("/brand-guidelines").json()["guidelines"]
-    # Update with test value
-    updated = dict(curr)
-    test_tag = " [QA Test]"
-    updated["brand_name"] = "Inkloom AI"
-    res = client.put("/brand-guidelines", json=updated)
-    assert res.status_code == 200
-    data = res.json()
-    assert data["status"] == "success"
-    assert data["guidelines"]["brand_name"] == "Inkloom AI"
-    print("  PUT /brand-guidelines successfully saved and returned guidelines.")
+    try:
+        # Update with test value
+        updated = dict(curr)
+        updated["brand_name"] = "Be10X"
+        res = client.put("/brand-guidelines", json=updated)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["guidelines"]["brand_name"] == "Be10X"
+        print("  PUT /brand-guidelines successfully saved and returned guidelines.")
+    finally:
+        client.put("/brand-guidelines", json=curr)
 
 def test_analyze_empty_content_error():
     res = client.post("/analyze", json={"content": "   "})

@@ -20,6 +20,7 @@ export default function Approvals() {
   const [message, setMessage] = useState("");
   const [activeTab, setActiveTab] = useState("PENDING");
   const [copiedId, setCopiedId] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Fetch all analyses and pending approvals
   const loadData = useCallback(async () => {
@@ -138,17 +139,21 @@ export default function Approvals() {
         <button
           type="button"
           className="btn-refresh"
+          disabled={refreshing}
           onClick={async () => {
+            setRefreshing(true);
             try {
               setError("");
               await loadData();
             } catch (err) {
               setError(err.message);
+            } finally {
+              setRefreshing(false);
             }
           }}
         >
-          <IconRefresh size={15} />
-          <span>Refresh</span>
+          <IconRefresh size={15} className={refreshing ? "spin-icon" : ""} />
+          <span>{refreshing ? "Refreshing..." : "Refresh"}</span>
         </button>
       </div>
 
