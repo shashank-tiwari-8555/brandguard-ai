@@ -66,7 +66,7 @@ This guide details the complete production deployment procedure for the **Inkloo
 | **Runtime** | `Python 3` | Python runtime |
 | **Build Command** | `pip install -r requirements.txt` | Installs pinned backend packages |
 | **Start Command** | `uvicorn main:app --host 0.0.0.0 --port $PORT` | Binds to dynamic `$PORT` and `0.0.0.0` |
-| **Instance Type** | Free (or Starter if attaching Disk) | See Section 4 for SQLite guidance |
+| **Instance Type** | Starter (required for Persistent Disk) | See Section 4 for SQLite persistent disk details |
 
 4. **Environment Variables**:
    Under the **Environment** tab, add:
@@ -76,7 +76,7 @@ This guide details the complete production deployment procedure for the **Inkloo
    | `GROQ_API_KEY` | `gsk_...` | **Required**: API key from [Groq Console](https://console.groq.com) |
    | `PYTHON_VERSION` | `3.13.0` | Recommended Python version |
    | `CORS_ORIGINS` | `https://*.vercel.app,http://localhost:5173` | Allowed frontend origins |
-   | `DATABASE_PATH` | `/var/data/inkloom.db` | Optional: Path to persistent disk mount |
+   | `DATABASE_PATH` | `/var/data/inkloom.db` | Path to persistent disk mount (Starter plan with Persistent Disk) |
 
 5. **Health Check Path**:
    Under **Advanced Settings**, set **Health Check Path** to `/health`.
@@ -117,28 +117,132 @@ Click **Deploy**. Once built, Vercel will assign a public domain (e.g. `https://
 
 ---
 
-## 4. Database Strategy & Render SQLite Evaluation
+## 4. Persistent SQLite Storage on Render
 
-### Current Local Setup: SQLite (`backend/inkloom.db`)
-- **Status**: 100% persistent on local machine with 47 verified analysis records and active **Be10X** Brand Guidelines.
-- **Reliability**: Uses SQLite with connection pooling, transactional rollbacks, and schema idempotency (`CREATE TABLE IF NOT EXISTS`, `INSERT OR IGNORE`).
+### Overview
+Inkloom AI uses an embedded SQLite database. In development, it defaults to `backend/inkloom.db`. In production on Render, Web Services default to ephemeral containers where any file written outside of an attached disk is discarded during service redeploys or sleep cycles.
 
-### Render SQLite Limitations & Persistence Analysis
-> [!WARNING]
-> On Render's **Free tier**, instances run on an **ephemeral disk**. When a free instance sleeps after 15 minutes of inactivity or restarts during a redeploy, any changes written to container disk will be lost.
+To ensure **100% data persistence** in production without rewriting SQLite code or migrating to an external database, Inkloom AI supports **Render Persistent Disks** via the `DATABASE_PATH` environment variable.
 
-### Recommended Production Persistence Solutions
+---
 
-#### Option 1: Render Persistent Disk (Safest for SQLite)
-- **Tier**: Render Starter ($7/mo) + Persistent Disk ($0.25/mo per GB).
-- **Mount Path**: Mount a 1 GB disk at `/var/data`.
-- **Configuration**: Set environment variable `DATABASE_PATH=/var/data/inkloom.db`.
-- **Benefit**: Retains all existing SQLite code, queries, and zero schema migration needed.
+### Step 1: Render Persistent Disk Configuration
 
-#### Option 2: Managed Cloud PostgreSQL (e.g. Supabase / Neon / Render Postgres)
-- **Tier**: Free tier available on Supabase or Neon.
-- **Benefit**: Multi-instance concurrency, automated backups, web dashboard.
-- **Implementation**: Swap `sqlite3` connection manager with `psycopg2` or `asyncpg` when scaling beyond single-instance.
+Persistent Disks require Render's **Starter** plan ($7/mo) and cost **$0.25/GB/month** (1 GB is more than sufficient for thousands of analyses).
+
+#### Automated via `render.yaml` (Blueprint)
+The repository includes a ready-to-use `render.yaml` specification:
+```yaml
+services:
+  - type: web
+    name: inkloom-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    plan: starter
+    disk:
+      name: inkloom-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /var/data/inkloom.db
+```
+
+#### Manual Configuration (Dashboard)
+If setting up manually through the Render Dashboard:
+1. Navigate to your Web Service (`inkloom-backend`) → **Disks** tab.
+2. Click **Add Disk**:
+   - **Name**: `inkloom-data`
+   - **Mount Path**: `/var/data`
+   - **Size**: `1 GB`
+3. Navigate to the **Environment** tab:
+   - Add `DATABASE_PATH` = `/var/data/inkloom.db`
+4. Click **Save Changes**. Render will redeploy the service with the attached persistent disk.
+
+---
+
+### Step 2: Safe Transfer of Existing Local Database to Render
+
+To preserve your existing analysis history, approval decisions (e.g. Analysis #42 Approved, #44 Rejected), and configured brand guidelines (e.g. Be10X), transfer `backend/inkloom.db` to the `/var/data/` persistent mount using either of the following methods.
+
+#### Option A: Transfer via Render Dashboard Web Shell (Quickest, No SSH setup needed)
+
+1. **On your local machine**, generate a Base64-encoded string of the database:
+   ```bash
+   # macOS:
+   base64 -i backend/inkloom.db -o db_b64.txt
+   
+   # Linux:
+   base64 backend/inkloom.db > db_b64.txt
+   ```
+
+2. **Open Render Dashboard**:
+   - Go to your `inkloom-backend` service.
+   - Click the **Shell** tab on the left navigation to open the interactive terminal.
+
+3. **In the Render Shell**, decode the file directly into `/var/data/inkloom.db`:
+   ```bash
+   mkdir -p /var/data
+   cat << 'EOF' | base64 -d > /var/data/inkloom.db
+   <PASTE_BASE64_STRING_FROM_db_b64.txt_HERE>
+   EOF
+   chmod 644 /var/data/inkloom.db
+   ```
+
+4. **Verify the database inside Render Shell**:
+   ```bash
+   python3 -c "
+   import sqlite3
+   conn = sqlite3.connect('/var/data/inkloom.db')
+   c = conn.cursor()
+   analyses = c.execute('SELECT count(*) FROM analyses').fetchone()[0]
+   brand = c.execute('SELECT brand_name FROM brand_guidelines WHERE id = 1').fetchone()[0]
+   print(f'✅ Verification SUCCESS: {analyses} analyses found, active brand: \"{brand}\"')
+   "
+   ```
+
+---
+
+#### Option B: Direct File Transfer via Render SSH / SCP
+
+1. In Render Dashboard, go to **Account Settings** → **SSH Keys** and add your local machine's public SSH key (`cat ~/.ssh/id_ed25519.pub` or `cat ~/.ssh/id_rsa.pub`).
+2. Go to your `inkloom-backend` service → click **Connect** → copy the SSH connection string (e.g. `srv-xxxx@ssh.oregon.render.com`).
+3. From your local machine terminal, copy the database directly:
+   ```bash
+   scp backend/inkloom.db srv-xxxx@ssh.oregon.render.com:/var/data/inkloom.db
+   ```
+4. Verify via SSH:
+   ```bash
+   ssh srv-xxxx@ssh.oregon.render.com "python3 -c \"import sqlite3; conn=sqlite3.connect('/var/data/inkloom.db'); print('Analyses:', conn.execute('SELECT count(*) FROM analyses').fetchone()[0])\""
+   ```
+
+---
+
+### Step 3: Automated Initialization (Zero-Data / Fresh Setup)
+
+If you do not transfer the local database, Inkloom AI's backend automatically creates and initializes a schema-identical database at `/var/data/inkloom.db` on first boot:
+- Automatically creates parent directories (`mkdir(parents=True, exist_ok=True)`).
+- Initializes tables `analyses` and `brand_guidelines` via idempotent `CREATE TABLE IF NOT EXISTS`.
+- Applies any missing column migrations (`analysis_mode`, `image_filename`, `ocr_extracted_text`, `processing_engine`).
+- Seeds default `brand_guidelines` record (`id=1`) via `INSERT OR IGNORE`.
+
+---
+
+### Step 4: Production SQLite Concurrency Optimization
+
+The backend connection manager in `backend/main.py` is pre-configured with production concurrency guards:
+```python
+# WAL mode allows concurrent readers and a writer simultaneously:
+connection.execute("PRAGMA journal_mode=WAL;")
+# Busy timeout avoids 'database is locked' errors during simultaneous API requests:
+connection.execute("PRAGMA busy_timeout=5000;")
+# 20.0s connection timeout for reliable lock acquisition:
+sqlite3.connect(db_file, timeout=20.0)
+```
 
 ---
 

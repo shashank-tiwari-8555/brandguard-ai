@@ -7,6 +7,11 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeploy: true
+    plan: starter
+    disk:
+      name: inkloom-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.0
@@ -14,4 +19,5 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://*.vercel.app,http://localhost:5173,http://localhost:5174
-
+      - key: DATABASE_PATH
+        value: /var/data/inkloom.db

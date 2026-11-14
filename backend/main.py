@@ -1,5 +1,6 @@
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -14,6 +15,8 @@ import json
 import re
 import os
 import io
+import uuid
+import shutil
 import logging
 
 try:
@@ -77,14 +80,48 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 # 3. DATABASE CONFIGURATION
 # ==========================================
 
-DB_PATH = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "inkloom.db")))
+def get_db_path() -> Path:
+    """
+    Returns the resolved SQLite database path.
+    - Default (local dev): backend/inkloom.db
+    - Production (Render): Configurable via DATABASE_PATH (e.g. /var/data/inkloom.db)
+    Ensures parent directory exists before establishing connection.
+    """
+    env_path = os.getenv("DATABASE_PATH")
+    if env_path and env_path.strip():
+        target = Path(env_path.strip()).resolve()
+    else:
+        target = (BASE_DIR / "inkloom.db").resolve()
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as dir_err:
+        logger.warning(f"Could not create database parent directory {target.parent}: {dir_err}")
+
+    return target
+
+
+DB_PATH = get_db_path()
 
 
 @contextmanager
 def get_db_connection():
-
-    connection = sqlite3.connect(DB_PATH)
+    """
+    Context manager providing a transactional SQLite connection with:
+    - Row factory as sqlite3.Row
+    - 20.0s connection timeout for concurrent queries
+    - WAL journal mode for optimal concurrent read/write performance
+    - Automatic commit on success, rollback on error
+    """
+    db_file = get_db_path()
+    connection = sqlite3.connect(db_file, timeout=20.0)
     connection.row_factory = sqlite3.Row
+
+    try:
+        connection.execute("PRAGMA journal_mode=WAL;")
+        connection.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
 
     try:
         yield connection
@@ -96,6 +133,32 @@ def get_db_connection():
 
     finally:
         connection.close()
+
+
+def get_uploads_dir() -> Path:
+    """
+    Returns the persistent uploads directory for advertisement images.
+    - If UPLOADS_DIR environment variable is set: use it
+    - Else if DATABASE_PATH is set (e.g. /var/data/inkloom.db): use get_db_path().parent / "uploads" (/var/data/uploads)
+    - Default local dev: BASE_DIR / "uploads" (backend/uploads)
+    Ensures directory exists.
+    """
+    env_dir = os.getenv("UPLOADS_DIR")
+    if env_dir and env_dir.strip():
+        target = Path(env_dir.strip()).resolve()
+    else:
+        db_parent = get_db_path().parent
+        target = (db_parent / "uploads").resolve()
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except Exception as dir_err:
+        logger.warning(f"Could not create uploads directory {target}: {dir_err}")
+
+    return target
+
+
+UPLOADS_DIR = get_uploads_dir()
 
 
 def init_db():
@@ -123,10 +186,30 @@ def init_db():
             connection.execute("ALTER TABLE analyses ADD COLUMN analysis_mode TEXT DEFAULT 'text'")
         if "image_filename" not in analysis_columns:
             connection.execute("ALTER TABLE analyses ADD COLUMN image_filename TEXT DEFAULT ''")
+        if "image_path" not in analysis_columns:
+            connection.execute("ALTER TABLE analyses ADD COLUMN image_path TEXT DEFAULT ''")
         if "ocr_extracted_text" not in analysis_columns:
             connection.execute("ALTER TABLE analyses ADD COLUMN ocr_extracted_text TEXT DEFAULT ''")
         if "processing_engine" not in analysis_columns:
             connection.execute("ALTER TABLE analyses ADD COLUMN processing_engine TEXT DEFAULT ''")
+
+        # Graceful backfill: if sample images exist in frontend/public/samples, copy to uploads and link existing sample records
+        try:
+            uploads_dir = get_uploads_dir()
+            frontend_samples = (BASE_DIR.parent / "frontend" / "public" / "samples").resolve()
+            if frontend_samples.exists():
+                for sample_file in frontend_samples.glob("*.png"):
+                    dest = uploads_dir / sample_file.name
+                    if not dest.exists():
+                        shutil.copy2(sample_file, dest)
+                connection.execute("""
+                    UPDATE analyses 
+                    SET image_path = image_filename 
+                    WHERE (image_path IS NULL OR image_path = '') 
+                    AND image_filename IN ('sample_promo_poster.png', 'sample_compliant_poster.png')
+                """)
+        except Exception as backfill_err:
+            logger.debug(f"Sample asset backfill skipped: {backfill_err}")
 
         # Brand Guidelines database
         connection.execute("""
@@ -662,6 +745,7 @@ def evaluate_and_save_compliance(
     content: str,
     analysis_mode: str = "text",
     image_filename: str = "",
+    image_path: str = "",
     ocr_extracted_text: str = "",
     processing_engine: str = "Groq AI (openai/gpt-oss-120b)"
 ) -> dict:
@@ -832,10 +916,11 @@ def evaluate_and_save_compliance(
                 created_at,
                 analysis_mode,
                 image_filename,
+                image_path,
                 ocr_extracted_text,
                 processing_engine
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             content,
             risk_score,
@@ -847,11 +932,14 @@ def evaluate_and_save_compliance(
             created_at,
             analysis_mode,
             image_filename,
+            image_path,
             ocr_extracted_text,
             processing_engine
         ))
 
         analysis_id = cursor.lastrowid
+
+    image_url = f"/images/{image_path}" if image_path else ""
 
     return {
         "message": "Advertisement analysis completed!",
@@ -859,6 +947,8 @@ def evaluate_and_save_compliance(
         "analysis_id": analysis_id,
         "analysis_mode": analysis_mode,
         "image_filename": image_filename,
+        "image_path": image_path,
+        "image_url": image_url,
         "ocr_extracted_text": ocr_extracted_text,
         "processing_engine": processing_engine,
         "original_content": content,
@@ -909,9 +999,10 @@ async def analyze_image(file: UploadFile = File(...)):
     Secure endpoint for poster & banner advertisement image analysis:
     1. Validates file presence, extensions, MIME types, and size limits (<= 10MB)
     2. Validates image integrity using Pillow (detects corrupted uploads)
-    3. Uses RapidOCR to extract visible advertisement text
-    4. Evaluates extracted text using the existing brand guidelines and compliance pipeline
-    5. Discloses processing engine and text-only LLM status transparently
+    3. Persists uploaded image securely to disk with a collision-resistant unique filename
+    4. Uses RapidOCR to extract visible advertisement text
+    5. Evaluates extracted text using the existing brand guidelines and compliance pipeline
+    6. Discloses processing engine and text-only LLM status transparently
     """
     if not file or not file.filename:
         raise HTTPException(
@@ -919,8 +1010,8 @@ async def analyze_image(file: UploadFile = File(...)):
             detail="No file selected. Please select a valid PNG, JPG, or WEBP image."
         )
 
-    filename = Path(file.filename).name
-    ext = Path(filename).suffix.lower()
+    original_filename = Path(file.filename).name
+    ext = Path(original_filename).suffix.lower()
 
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         raise HTTPException(
@@ -952,6 +1043,19 @@ async def analyze_image(file: UploadFile = File(...)):
             detail="Uploaded file is corrupted or not a valid image format."
         )
 
+    # Generate collision-resistant unique filename and persist image bytes securely
+    clean_stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(original_filename).stem)[:32] or "poster"
+    stored_filename = f"ad_{uuid.uuid4().hex[:12]}_{clean_stem}{ext}"
+    uploads_dir = get_uploads_dir()
+    destination_path = uploads_dir / stored_filename
+
+    try:
+        with open(destination_path, "wb") as f_out:
+            f_out.write(image_bytes)
+    except Exception as save_err:
+        logger.error(f"Failed to persist uploaded advertisement image: {save_err}")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded image on the server.")
+
     # Extract visible advertisement text using RapidOCR
     extracted_text, ocr_lines, ocr_status = extract_text_from_image_bytes(image_bytes)
 
@@ -966,7 +1070,9 @@ async def analyze_image(file: UploadFile = File(...)):
             "status": "warning",
             "message": "No visible advertisement text was detected in the uploaded image poster.",
             "analysis_mode": "image",
-            "image_filename": filename,
+            "image_filename": original_filename,
+            "image_path": stored_filename,
+            "image_url": f"/images/{stored_filename}",
             "ocr_status": ocr_status,
             "extracted_text": "",
             "ocr_lines": [],
@@ -981,11 +1087,12 @@ async def analyze_image(file: UploadFile = File(...)):
             "approval_status": "Not Required"
         }
 
-    # Run the compliance evaluation pipeline with the extracted text
+    # Run the compliance evaluation pipeline with the extracted text and stored image reference
     result = evaluate_and_save_compliance(
         content=extracted_text,
         analysis_mode="image",
-        image_filename=filename,
+        image_filename=original_filename,
+        image_path=stored_filename,
         ocr_extracted_text=extracted_text,
         processing_engine=engine_name
     )
@@ -996,6 +1103,71 @@ async def analyze_image(file: UploadFile = File(...)):
     result["ai_multimodal_status"] = ai_status_note
 
     return result
+
+
+# ==========================================
+# 12. IMAGE SERVING & PREVIEW ROUTES
+# ==========================================
+
+@app.get("/images/{filename}")
+def serve_image(filename: str):
+    """
+    Secure image-serving endpoint:
+    - Protects against directory traversal ('..', '/', '\')
+    - Enforces allowed extensions (.png, .jpg, .jpeg, .webp)
+    - Verifies file is strictly contained within uploads directory
+    - Returns proper Content-Type / Media-Type
+    """
+    clean_name = Path(filename).name
+    if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename requested.")
+
+    ext = Path(clean_name).suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file format '{ext}'.")
+
+    uploads_dir = get_uploads_dir().resolve()
+    target_file = (uploads_dir / clean_name).resolve()
+
+    # Enforce directory containment
+    try:
+        target_file.relative_to(uploads_dir)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    if not target_file.is_file():
+        raise HTTPException(status_code=404, detail="Requested image not found.")
+
+    media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    return FileResponse(
+        path=str(target_file),
+        media_type=media_types.get(ext, "image/png"),
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
+
+
+@app.get("/analyses/{analysis_id}/image")
+def get_analysis_image(analysis_id: int):
+    """
+    Retrieves the original uploaded advertisement image directly by analysis ID.
+    """
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT image_path, image_filename FROM analyses WHERE id = ?",
+            (analysis_id,)
+        ).fetchone()
+
+        if not row or not row["image_path"]:
+            raise HTTPException(status_code=404, detail=f"No image attached to analysis #{analysis_id}.")
+
+        image_path = row["image_path"]
+
+    return serve_image(image_path)
 
 
 # ==========================================
@@ -1024,6 +1196,10 @@ def get_history():
         item["issues"] = json.loads(
             item.pop("issues_json") or "[]"
         )
+        if item.get("image_path"):
+            item["image_url"] = f"/images/{item['image_path']}"
+        else:
+            item["image_url"] = ""
 
         history.append(item)
 
@@ -1065,6 +1241,10 @@ def get_approvals():
         item["issues"] = json.loads(
             item.pop("issues_json") or "[]"
         )
+        if item.get("image_path"):
+            item["image_url"] = f"/images/{item['image_path']}"
+        else:
+            item["image_url"] = ""
 
         approvals.append(item)
 

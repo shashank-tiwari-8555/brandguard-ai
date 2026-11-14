@@ -22,9 +22,17 @@ backend/__pycache__/
 
 # SQLite database files (preserve locally, do not commit production/runtime data)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
-backend/inkloom.db
+backend/inkloom.db*
+
+# Uploaded advertisement images
+backend/uploads/
+uploads/
+*.png.upload
+*.jpg.upload
 
 # Dependencies
 node_modules/

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import "./History.css";
 import { API_BASE_URL } from "../config";
-import { IconSearch, IconFilter, IconCopy, IconCheck, IconX, IconRefresh, IconAlertTriangle, IconShield, IconImage } from "./Icons";
+import { IconSearch, IconFilter, IconCopy, IconCheck, IconX, IconRefresh, IconAlertTriangle, IconShield, IconImage, IconMaximize } from "./Icons";
 
 export default function History() {
   const [history, setHistory] = useState([]);
@@ -12,6 +12,19 @@ export default function History() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [selectedItem, setSelectedItem] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  const [enlargedHistoryImage, setEnlargedHistoryImage] = useState(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setEnlargedHistoryImage(null);
+      }
+    };
+    if (enlargedHistoryImage) {
+      window.addEventListener("keydown", handleKeyDown);
+    }
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [enlargedHistoryImage]);
 
   const fetchHistory = async () => {
     setLoading(true);
@@ -306,10 +319,62 @@ export default function History() {
             </div>
 
             <div className="modal-body">
+              {/* Original Advertisement Creative (Image Mode) */}
+              {selectedItem.analysis_mode === "image" && (
+                <div className="modal-section modal-creative-section">
+                  <div className="modal-creative-header">
+                    <h3>
+                      <IconImage size={15} /> Original Advertisement Creative
+                    </h3>
+                    <span className="creative-filename-tag">
+                      {selectedItem.image_filename || "Poster Image"}
+                    </span>
+                  </div>
+                  <div
+                    className="modal-creative-canvas"
+                    onClick={() => {
+                      const imgUrl = selectedItem.image_url
+                        ? `${API_BASE_URL}${selectedItem.image_url}`
+                        : (selectedItem.image_path ? `${API_BASE_URL}/images/${selectedItem.image_path}` : `${API_BASE_URL}/analyses/${selectedItem.id}/image`);
+                      setEnlargedHistoryImage({
+                        url: imgUrl,
+                        title: selectedItem.image_filename || `Analysis #${selectedItem.id} Creative`,
+                        id: selectedItem.id,
+                        risk: selectedItem.risk_level,
+                        score: selectedItem.risk_score
+                      });
+                    }}
+                  >
+                    <img
+                      src={
+                        selectedItem.image_url
+                          ? `${API_BASE_URL}${selectedItem.image_url}`
+                          : (selectedItem.image_path ? `${API_BASE_URL}/images/${selectedItem.image_path}` : `${API_BASE_URL}/analyses/${selectedItem.id}/image`)
+                      }
+                      alt={selectedItem.image_filename || `Analysis #${selectedItem.id} Poster`}
+                      className="modal-creative-img"
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        const fallback = e.target.parentElement.querySelector('.modal-creative-fallback');
+                        if (fallback) fallback.style.display = 'flex';
+                      }}
+                    />
+                    <div className="modal-creative-fallback" style={{ display: 'none' }}>
+                      <IconImage size={28} />
+                      <span>Original creative not available on server</span>
+                    </div>
+                    <div className="creative-hover-cue">
+                      <IconMaximize size={15} />
+                      <span>Click to enlarge creative</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Original Content */}
               <div className="modal-section">
                 <h3>
-                  Original Advertisement
+                  {selectedItem.analysis_mode === "image" ? "Extracted OCR Copy" : "Original Advertisement"}
                   {selectedItem.analysis_mode === "image" && (
                     <span className="history-mode-tag" style={{ marginLeft: "10px" }}>
                       <IconImage size={12} /> Poster ({selectedItem.image_filename || "Extracted"})
@@ -317,7 +382,7 @@ export default function History() {
                   )}
                 </h3>
                 <div className="content-quote-box">
-                  <p>{selectedItem.original_content}</p>
+                  <p>{selectedItem.ocr_extracted_text || selectedItem.original_content}</p>
                 </div>
               </div>
 
@@ -394,6 +459,40 @@ export default function History() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enlarged Creative Inspection Modal */}
+      {enlargedHistoryImage && (
+        <div className="modal-backdrop" onClick={() => setEnlargedHistoryImage(null)}>
+          <div className="creative-enlarge-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="enlarge-modal-header">
+              <div className="enlarge-header-info">
+                <h3>Analysis #{enlargedHistoryImage.id} — Original Creative</h3>
+                <span className="enlarge-filename">{enlargedHistoryImage.title}</span>
+                {enlargedHistoryImage.risk && (
+                  <span className={`risk-badge risk-${enlargedHistoryImage.risk.toLowerCase()}`}>
+                    {enlargedHistoryImage.risk} Risk ({enlargedHistoryImage.score}/100)
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-close-modal"
+                onClick={() => setEnlargedHistoryImage(null)}
+                title="Close enlarged creative view"
+              >
+                <IconX size={18} />
+              </button>
+            </div>
+            <div className="enlarge-modal-body">
+              <img
+                src={enlargedHistoryImage.url}
+                alt={enlargedHistoryImage.title}
+                className="enlarged-full-img"
+              />
             </div>
           </div>
         </div>

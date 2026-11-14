@@ -8,7 +8,8 @@ import {
   IconRefresh,
   IconCopy,
   IconShield,
-  IconImage
+  IconImage,
+  IconMaximize
 } from "./Icons";
 
 export default function Approvals() {
@@ -21,6 +22,20 @@ export default function Approvals() {
   const [activeTab, setActiveTab] = useState("PENDING");
   const [copiedId, setCopiedId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [enlargedImage, setEnlargedImage] = useState(null);
+
+  // Close enlarge modal on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setEnlargedImage(null);
+      }
+    };
+    if (enlargedImage) {
+      window.addEventListener("keydown", handleKeyDown);
+    }
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [enlargedImage]);
 
   // Fetch all analyses and pending approvals
   const loadData = useCallback(async () => {
@@ -283,22 +298,96 @@ export default function Approvals() {
                   </small>
                 </div>
 
+                {/* Original Advertisement Creative Preview (Image Mode) */}
+                {item.analysis_mode === "image" && (
+                  <div className="approval-creative-preview-box">
+                    <div className="creative-preview-header">
+                      <div className="creative-meta-left">
+                        <IconImage size={15} className="creative-icon" />
+                        <span className="creative-label">Original Creative:</span>
+                        <span className="creative-filename" title={item.image_filename || "Poster creative"}>
+                          {item.image_filename || "Uploaded Poster Image"}
+                        </span>
+                        <span className="approval-poster-tag">Poster Audit</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-enlarge-creative"
+                        onClick={() => {
+                          const imageUrl = item.image_url
+                            ? `${API_URL}${item.image_url}`
+                            : (item.image_path ? `${API_URL}/images/${item.image_path}` : `${API_URL}/analyses/${item.id}/image`);
+                          setEnlargedImage({
+                            url: imageUrl,
+                            title: item.image_filename || `Analysis #${item.id} Poster`,
+                            id: item.id,
+                            risk: item.risk_level,
+                            score: item.risk_score
+                          });
+                        }}
+                      >
+                        <IconMaximize size={13} />
+                        <span>Enlarge Creative</span>
+                      </button>
+                    </div>
+
+                    <div
+                      className="creative-image-canvas"
+                      onClick={() => {
+                        const imageUrl = item.image_url
+                          ? `${API_URL}${item.image_url}`
+                          : (item.image_path ? `${API_URL}/images/${item.image_path}` : `${API_URL}/analyses/${item.id}/image`);
+                        setEnlargedImage({
+                          url: imageUrl,
+                          title: item.image_filename || `Analysis #${item.id} Poster`,
+                          id: item.id,
+                          risk: item.risk_level,
+                          score: item.risk_score
+                        });
+                      }}
+                    >
+                      <img
+                        src={
+                          item.image_url
+                            ? `${API_URL}${item.image_url}`
+                            : (item.image_path ? `${API_URL}/images/${item.image_path}` : `${API_URL}/analyses/${item.id}/image`)
+                        }
+                        alt={item.image_filename || `Analysis #${item.id} Creative`}
+                        className="creative-preview-img"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          const fallback = e.target.parentElement.querySelector('.creative-fallback-placeholder');
+                          if (fallback) fallback.style.display = 'flex';
+                        }}
+                      />
+                      <div className="creative-fallback-placeholder" style={{ display: 'none' }}>
+                        <IconImage size={28} />
+                        <span>Preview image not found on server</span>
+                      </div>
+                      <div className="creative-hover-cue">
+                        <IconMaximize size={15} />
+                        <span>Click to enlarge creative</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Compare View: Original Copy vs AI Revision */}
                 <div className="compare-grid">
                   <div className="compare-pane pane-original">
                     <div className="pane-header">
                       <span className="pane-title">
-                        Original Copy Submitted
+                        {item.analysis_mode === "image" ? "Extracted OCR Advertisement Text" : "Original Copy Submitted"}
                         {item.analysis_mode === "image" && (
                           <span className="approval-poster-tag" style={{ marginLeft: "8px" }}>
-                            <IconImage size={11} /> Poster ({item.image_filename || "Image"})
+                            <IconImage size={11} /> {item.image_filename || "Poster"}
                           </span>
                         )}
                       </span>
                       <span className="pane-tag">Flagged</span>
                     </div>
                     <div className="pane-body">
-                      <p>{item.original_content}</p>
+                      <p>{item.ocr_extracted_text || item.original_content}</p>
                     </div>
                   </div>
 
@@ -349,6 +438,11 @@ export default function Approvals() {
                             <div className="chip-claim">&ldquo;{issue.claim}&rdquo;</div>
                           )}
                           <p className="chip-expl">{issue.explanation}</p>
+                          {issue.recommendation && (
+                            <div className="chip-recommendation">
+                              <strong>Recommendation:</strong> {issue.recommendation}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -396,6 +490,40 @@ export default function Approvals() {
           })
         )}
       </div>
+
+      {/* Enlarged Creative Inspection Modal */}
+      {enlargedImage && (
+        <div className="modal-backdrop" onClick={() => setEnlargedImage(null)}>
+          <div className="creative-enlarge-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="enlarge-modal-header">
+              <div className="enlarge-header-info">
+                <h3>Creative Preview — Analysis #{enlargedImage.id}</h3>
+                <span className="enlarge-filename">{enlargedImage.title}</span>
+                {enlargedImage.risk && (
+                  <span className={`risk-badge risk-${enlargedImage.risk.toLowerCase()}`}>
+                    {enlargedImage.risk} Risk ({enlargedImage.score}/100)
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-close-modal"
+                onClick={() => setEnlargedImage(null)}
+                title="Close enlarged creative view"
+              >
+                <IconX size={18} />
+              </button>
+            </div>
+            <div className="enlarge-modal-body">
+              <img
+                src={enlargedImage.url}
+                alt={enlargedImage.title}
+                className="enlarged-full-img"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

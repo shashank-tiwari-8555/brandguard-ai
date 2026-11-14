@@ -567,11 +567,20 @@ export default function ContentAnalyzer() {
               </div>
 
               <div className="image-audit-grid">
-                {previewUrl && (
+                {(previewUrl || result.image_url || result.image_path) && (
                   <div className="image-preview-panel">
                     <div className="preview-label">Uploaded Advertisement Poster</div>
                     <div className="preview-img-container">
-                      <img src={previewUrl} alt="Analyzed Advertisement" className="audited-poster-img" />
+                      <img
+                        src={
+                          previewUrl ||
+                          (result.image_url
+                            ? `${API_BASE_URL}${result.image_url}`
+                            : `${API_BASE_URL}/images/${result.image_path}`)
+                        }
+                        alt="Analyzed Advertisement"
+                        className="audited-poster-img"
+                      />
                     </div>
                   </div>
                 )}
