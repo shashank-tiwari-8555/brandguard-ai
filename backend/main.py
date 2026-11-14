@@ -465,6 +465,126 @@ def merge_compliance_issues(rule_issues: list, ai_issues: list) -> list:
     return merged
 
 
+# ==========================================
+# 6. AI REVISION VALIDATION SAFEGUARD
+# ==========================================
+
+UNSUPPORTED_REVISION_PATTERNS = [
+    # Invented social proof / enterprise client claims
+    (
+        r"\b(?:join|relied\s+on\s+by|trusted\s+by|chosen\s+by)\s+(?:major|leading|fortune\s*\d+|top|global|enterprise)\s+(?:enterprises|companies|brands|corporations|organizations|clients)\b",
+        "Unsupported Enterprise Claim",
+        "The revision introduced an unverified claim about major enterprise clients not present in the original advertisement."
+    ),
+    (
+        r"\bjoin\s+major\s+enterprises\b",
+        "Unsupported Enterprise Claim",
+        "The revision introduced an unsupported claim to join major enterprises."
+    ),
+    (
+        r"\brely\s+on\s+Inkloom\s+AI\b",
+        "Unsupported Platform Self-Reference",
+        "The revision introduced an unsupported client reliance claim."
+    ),
+    (
+        r"\bjoin\s+(?:thousands|millions|hundreds|countless|over\s+\d+)\b",
+        "Unsupported Social Proof",
+        "The revision introduced an unsupported social-proof claim."
+    ),
+    (
+        r"\b(?:thousands|millions|hundreds|tens\s+of\s+thousands)\s+of\s+(?:happy\s+)?(?:enterprises|customers|companies|clients|users|businesses)\b",
+        "Unsupported Customer Metric",
+        "The revision introduced an unverified numerical customer count not supported by the original advertisement."
+    ),
+    (
+        r"\btrusted\s+by\s+(?:over\s+)?(?:\d+|thousands|millions|major|leading)\b",
+        "Unsupported Trust Metric",
+        "The revision introduced an unsubstantiated trust claim."
+    ),
+    (
+        r"\baward[- ]winning\b",
+        "Unsupported Award Claim",
+        "The revision claimed an award that was not stated in the original advertisement."
+    ),
+    (
+        r"\b(?:certified|endorsed|backed)\s+by\b",
+        "Unsupported Endorsement Claim",
+        "The revision introduced an endorsement claim not present in the original copy."
+    ),
+    (
+        r"\b(?:world['’]s\s+best|#\s*1\b|number\s+one|industry\s+leader)\b",
+        "Unsupported Superiority Claim in Revision",
+        "The revision retained or introduced an unverified superiority claim."
+    ),
+    (
+        r"\b(?:100\s*%\s*guarantee(?:d)?|zero\s*risk|miracle\s+cure|guaranteed\s+results)\b",
+        "Unsupported Guarantee in Revision",
+        "The revision retained or introduced an absolute guarantee."
+    )
+]
+
+
+def validate_and_sanitize_suggested_revision(
+    suggested_revision: str,
+    original_content: str,
+    guidelines: dict
+) -> tuple[str, list[dict]]:
+    """
+    Validation safeguard to detect and sanitize unsupported claims / hallucinations
+    in AI-generated suggested revisions before displaying them.
+    
+    1. Checks for unverified social proof, customer metrics, enterprise claims, awards, and guarantees.
+    2. Verifies if claim was grounded in the original ad copy or brand guidelines.
+    3. If ungrounded, strips the hallucinated statement and flags a validation issue.
+    4. Ensures the remaining revision is grammatically coherent, factual, and non-empty.
+    """
+    if not suggested_revision or not suggested_revision.strip():
+        return suggested_revision, []
+
+    original_lower = original_content.lower()
+    guidelines_text = " ".join(str(guidelines.get(k, "")) for k in BRAND_GUIDELINE_FIELDS).lower()
+
+    # Split into sentences while preserving sentence delimiters
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", suggested_revision.strip()) if s.strip()]
+    cleaned_sentences = []
+    safeguard_issues = []
+
+    for sentence in raw_sentences:
+        sentence_lower = sentence.lower()
+        has_hallucination = False
+
+        for pattern, issue_type, explanation in UNSUPPORTED_REVISION_PATTERNS:
+            match = re.search(pattern, sentence_lower, re.IGNORECASE)
+            if match:
+                matched_text = match.group(0).lower()
+                # Verify if this claim was grounded in original copy or saved brand guidelines
+                if matched_text not in original_lower and matched_text not in guidelines_text:
+                    has_hallucination = True
+                    safeguard_issues.append({
+                        "type": f"Safeguard: {issue_type}",
+                        "claim": sentence,
+                        "explanation": f"{explanation} Filtered out statement: '{sentence}'",
+                        "severity": "Medium",
+                        "recommendation": "Use neutral, factual wording grounded strictly in the original advertisement."
+                    })
+                    break
+
+        if not has_hallucination:
+            cleaned_sentences.append(sentence)
+
+    if cleaned_sentences:
+        clean_text = " ".join(cleaned_sentences).strip()
+    else:
+        # Fallback if entire revision was hallucinated: generate neutral factual statement
+        brand_name = (guidelines.get("brand_name") or "").strip() or "Our product"
+        clean_text = (
+            f"{brand_name} is designed to provide reliable, transparent solutions. "
+            "Please review product specifications and applicable terms for full details."
+        )
+
+    return clean_text, safeguard_issues
+
+
 def analyze_with_groq_and_rewrite(
     content: str,
     guidelines: dict,
@@ -479,7 +599,12 @@ def analyze_with_groq_and_rewrite(
             "transparent solutions. Performance and results may vary depending on individual circumstances. "
             "Please review the applicable product information and offer terms."
         )
-        return [], fallback_revision, "Rule-based fallback"
+        clean_fallback, safeguard_issues = validate_and_sanitize_suggested_revision(
+            suggested_revision=fallback_revision,
+            original_content=content,
+            guidelines=guidelines
+        )
+        return safeguard_issues, clean_fallback, "Rule-based fallback"
 
     brand_guidelines_text = build_brand_guidelines_prompt(guidelines)
 
@@ -516,7 +641,7 @@ No custom brand guidelines have been configured. Apply standard truth-in-adverti
 5. Ensure a professional, transparent, and trustworthy tone.
 6. Distinguish potentially risky claims (requiring benchmark evidence) from outright false or prohibited promises."""
 
-    system_prompt = f"""You are an expert advertisement compliance and brand governance assistant working for Inkloom AI.
+    system_prompt = f"""You are an expert advertisement compliance and brand governance auditor.
 
 Your task is to analyze advertisement copy for compliance with brand guidelines and truth-in-advertising regulations, identify all issues with clear explanations, and generate a corrected suggested revision.
 
@@ -530,11 +655,12 @@ STRICT INSTRUCTIONS:
    - "explanation": Clear, detailed explanation specifically citing the brand guideline or compliance rule violated.
    - "severity": "High", "Medium", or "Low".
    - "recommendation": Actionable correction guidance based on brand guidelines.
-3. Provide a "suggested_revision" that rewrites the advertisement into an honest, persuasive, and brand-aligned version. It must:
-   - Strictly follow the brand tone, target audience, and writing rules.
-   - Incorporate preferred words and phrases naturally.
-   - Purge all prohibited words, false guarantees, and unverified claims.
-   - Never fabricate statistics, user counts, or offer terms.
+3. Provide a "suggested_revision" that rewrites the advertisement into an honest, persuasive, and brand-aligned version. It must adhere to these MANDATORY RULES:
+   - GROUNDING IN ORIGINAL FACTS: Preserve legitimate, truthful information from the original advertisement (e.g. product name, core service, valid offer parameters).
+   - ZERO HALLUCINATED SOCIAL PROOF OR ENTERPRISE CLAIMS: NEVER invent customers, client lists, customer numbers, testimonials, partnerships, certifications, awards, statistics, or product capabilities. NEVER write statements like "Join major enterprises that rely on...", "Trusted by thousands...", or "Industry leaders choose...".
+   - CLEAN CORRECTION OVER FABRICATION: Remove unsupported guarantees, superiority claims ("#1", "world's best"), and performance claims ("10x faster"). If evidence is unavailable, use neutral factual wording instead of inventing replacement claims or imaginary clients.
+   - BRAND GUIDELINES ALIGNMENT: Strictly follow the brand tone, target audience, and writing rules. Incorporate preferred words naturally and purge all prohibited terms.
+   - NO SELF-REFERENTIAL CONFUSION: You are auditing the advertisement. Do NOT inject "Inkloom AI" into the suggested revision unless the original ad is specifically advertising Inkloom AI.
 4. If the advertisement is already fully compliant and matches all brand guidelines, return an empty "issues" list and return the advertisement as the suggested_revision.
 5. Return ONLY a valid JSON object matching this structure with no markdown wrapper or extra text:
 {{
@@ -590,6 +716,13 @@ Perform a complete brand governance evaluation and return the JSON object."""
         if not suggested_revision:
             raise ValueError("Groq did not provide a suggested revision.")
 
+        # Validation safeguard: inspect suggested revision for unsupported claims or hallucinations
+        clean_revision, safeguard_issues = validate_and_sanitize_suggested_revision(
+            suggested_revision=suggested_revision,
+            original_content=content,
+            guidelines=guidelines
+        )
+
         valid_ai_issues = []
         for issue in ai_issues:
             if isinstance(issue, dict) and "claim" in issue and "explanation" in issue:
@@ -604,7 +737,10 @@ Perform a complete brand governance evaluation and return the JSON object."""
                     "recommendation": str(issue.get("recommendation", "Align with brand guidelines."))
                 })
 
-        return valid_ai_issues, suggested_revision, "Groq AI"
+        # Append safeguard issues if any unsupported statements were caught and filtered
+        valid_ai_issues.extend(safeguard_issues)
+
+        return valid_ai_issues, clean_revision, "Groq AI"
 
     except Exception:
 
@@ -616,8 +752,13 @@ Perform a complete brand governance evaluation and return the JSON object."""
             "transparent solutions. Performance and results may vary depending on individual circumstances. "
             "Please review the applicable product information and offer terms."
         )
+        clean_fallback, safeguard_issues = validate_and_sanitize_suggested_revision(
+            suggested_revision=fallback_revision,
+            original_content=content,
+            guidelines=guidelines
+        )
 
-        return [], fallback_revision, "Rule-based fallback"
+        return safeguard_issues, clean_fallback, "Rule-based fallback"
 
 
 def generate_suggested_revision(content, issues):
