@@ -3,6 +3,20 @@
    Enterprise Table and Inspection Modal
    ========================================================================== */
 
+.history-mode-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
 .history-page {
   padding: 35px 40px;
   max-width: 1300px;
@@ -652,7 +666,21 @@
 }
 
 @media (max-width: 900px) {
-  .history-page {
+  .history-mode-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
+.history-page {
     padding: 20px;
   }
 
@@ -666,3 +694,4 @@
     max-width: 200px;
   }
 }
+

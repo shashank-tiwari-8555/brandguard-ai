@@ -7,7 +7,8 @@ import {
   IconAlertTriangle,
   IconRefresh,
   IconCopy,
-  IconShield
+  IconShield,
+  IconImage
 } from "./Icons";
 
 export default function Approvals() {
@@ -281,7 +282,14 @@ export default function Approvals() {
                 <div className="compare-grid">
                   <div className="compare-pane pane-original">
                     <div className="pane-header">
-                      <span className="pane-title">Original Copy Submitted</span>
+                      <span className="pane-title">
+                        Original Copy Submitted
+                        {item.analysis_mode === "image" && (
+                          <span className="approval-poster-tag" style={{ marginLeft: "8px" }}>
+                            <IconImage size={11} /> Poster ({item.image_filename || "Image"})
+                          </span>
+                        )}
+                      </span>
                       <span className="pane-tag">Flagged</span>
                     </div>
                     <div className="pane-body">

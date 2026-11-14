@@ -1,5 +1,5 @@
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -13,7 +13,14 @@ import sqlite3
 import json
 import re
 import os
+import io
 import logging
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    ocr_engine = RapidOCR()
+except Exception as e:
+    ocr_engine = None
 
 
 # ==========================================
@@ -109,6 +116,17 @@ def init_db():
                 created_at TEXT
             )
         """)
+
+        # Add image & metadata columns if they do not exist
+        analysis_columns = [col[1] for col in connection.execute("PRAGMA table_info(analyses)").fetchall()]
+        if "analysis_mode" not in analysis_columns:
+            connection.execute("ALTER TABLE analyses ADD COLUMN analysis_mode TEXT DEFAULT 'text'")
+        if "image_filename" not in analysis_columns:
+            connection.execute("ALTER TABLE analyses ADD COLUMN image_filename TEXT DEFAULT ''")
+        if "ocr_extracted_text" not in analysis_columns:
+            connection.execute("ALTER TABLE analyses ADD COLUMN ocr_extracted_text TEXT DEFAULT ''")
+        if "processing_engine" not in analysis_columns:
+            connection.execute("ALTER TABLE analyses ADD COLUMN processing_engine TEXT DEFAULT ''")
 
         # Brand Guidelines database
         connection.execute("""
@@ -241,6 +259,47 @@ def build_brand_guidelines_prompt(guidelines):
         )
 
     return "\n".join(sections)
+
+
+# ==========================================
+# 5B. OCR TEXT EXTRACTION ENGINE
+# ==========================================
+
+def extract_text_from_image_bytes(image_bytes: bytes) -> tuple[str, list[dict], str]:
+    """
+    Extracts visible advertisement text from image bytes using RapidOCR.
+    Returns: (full_extracted_text, detailed_lines, status_message)
+    """
+    if not ocr_engine:
+        logger.warning("RapidOCR engine is not initialized.")
+        return "", [], "OCR engine unavailable"
+
+    try:
+        results, elapse = ocr_engine(image_bytes)
+        if not results:
+            return "", [], "No text detected in image"
+
+        lines = []
+        full_text_parts = []
+
+        for item in results:
+            # item structure: [box_coordinates, text, confidence]
+            text = (item[1] or "").strip()
+            confidence = float(item[2]) if len(item) > 2 else 0.0
+
+            if text:
+                lines.append({
+                    "text": text,
+                    "confidence": round(confidence, 3)
+                })
+                full_text_parts.append(text)
+
+        full_text = " \n".join(full_text_parts)
+        return full_text, lines, "success"
+
+    except Exception as e:
+        logger.exception("RapidOCR text extraction failed.")
+        return "", [], f"OCR extraction error: {str(e)}"
 
 
 # ==========================================
@@ -586,21 +645,25 @@ def save_brand_guidelines(request: BrandGuidelinesRequest):
 
 
 # ==========================================
-# 9. ADVERTISEMENT ANALYSIS
+# 9. ADVERTISEMENT COMPLIANCE PIPELINE
 # ==========================================
 
-@app.post("/analyze")
-def analyze_content(request: AnalysisRequest):
-
-    content = request.content.strip()
-
-    if not content:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Please provide advertisement content."
-        )
-
+def evaluate_and_save_compliance(
+    content: str,
+    analysis_mode: str = "text",
+    image_filename: str = "",
+    ocr_extracted_text: str = "",
+    processing_engine: str = "Groq AI (openai/gpt-oss-120b)"
+) -> dict:
+    """
+    Core reusable compliance pipeline:
+    1. Evaluates copy against active SQLite brand guidelines
+    2. Runs deterministic rule-based compliance pattern detection
+    3. Runs deep LLM brand governance & rewriting via Groq AI
+    4. Merges and deduplicates issues
+    5. Calculates weighted risk score and severity
+    6. Persists analysis to SQLite analyses table
+    """
     text = content.lower()
 
     # 1. FETCH SAVED BRAND GUIDELINES
@@ -615,7 +678,6 @@ def analyze_content(request: AnalysisRequest):
         severity,
         recommendation
     ):
-
         match = re.search(
             pattern,
             text,
@@ -623,26 +685,18 @@ def analyze_content(request: AnalysisRequest):
         )
 
         if match:
-
             rule_issues.append({
-
                 "type": issue_type,
-
                 "claim": match.group(0),
-
                 "explanation": explanation,
-
                 "severity": severity,
-
                 "recommendation": recommendation
-
             })
 
     # 2. CHECK PROHIBITED WORDS FROM BRAND GUIDELINES
     prohibited_raw = (guidelines.get("prohibited_words") or "").strip()
 
     if prohibited_raw:
-
         prohibited_terms = [
             t.strip()
             for t in re.split(r"[,;\n]+", prohibited_raw)
@@ -650,25 +704,16 @@ def analyze_content(request: AnalysisRequest):
         ]
 
         for term in prohibited_terms:
-
             pattern = r"\b" + re.escape(term) + r"\b"
-
             match = re.search(pattern, text, re.IGNORECASE)
 
             if match:
-
                 rule_issues.append({
-
                     "type": "Prohibited Brand Term",
-
                     "claim": match.group(0),
-
                     "explanation": f"The advertisement uses '{match.group(0)}', which is explicitly prohibited by your brand guidelines.",
-
                     "severity": "High",
-
                     "recommendation": "Remove or replace this prohibited term with approved brand vocabulary."
-
                 })
 
     # 3. RULE-BASED COMPLIANCE CHECKS
@@ -738,10 +783,7 @@ def analyze_content(request: AnalysisRequest):
     # 5. MERGE RULE-BASED AND AI ISSUES
     issues = merge_compliance_issues(rule_issues, ai_issues)
 
-    # ==========================================
-    # 10. RISK SCORE CALCULATION
-    # ==========================================
-
+    # 6. RISK SCORE CALCULATION
     severity_weights = {
         "High": 30,
         "Medium": 20,
@@ -763,18 +805,11 @@ def analyze_content(request: AnalysisRequest):
     else:
         risk_level = "Low"
 
-    # ==========================================
-    # 11. SAVE ANALYSIS TO DATABASE
-    # ==========================================
-
+    # 7. SAVE ANALYSIS TO DATABASE
     created_at = datetime.now(timezone.utc).isoformat()
-
-    approval_status = (
-        "Pending" if issues else "Not Required"
-    )
+    approval_status = "Pending" if issues else "Not Required"
 
     with get_db_connection() as connection:
-
         cursor = connection.execute("""
             INSERT INTO analyses (
                 original_content,
@@ -784,9 +819,13 @@ def analyze_content(request: AnalysisRequest):
                 issues_json,
                 suggested_revision,
                 approval_status,
-                created_at
+                created_at,
+                analysis_mode,
+                image_filename,
+                ocr_extracted_text,
+                processing_engine
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             content,
             risk_score,
@@ -795,38 +834,158 @@ def analyze_content(request: AnalysisRequest):
             json.dumps(issues),
             suggested_revision,
             approval_status,
-            created_at
+            created_at,
+            analysis_mode,
+            image_filename,
+            ocr_extracted_text,
+            processing_engine
         ))
 
         analysis_id = cursor.lastrowid
 
     return {
-
         "message": "Advertisement analysis completed!",
-
         "status": "success",
-
         "analysis_id": analysis_id,
-
+        "analysis_mode": analysis_mode,
+        "image_filename": image_filename,
+        "ocr_extracted_text": ocr_extracted_text,
+        "processing_engine": processing_engine,
         "original_content": content,
-
         "risk_score": risk_score,
-
         "risk_level": risk_level,
-
         "total_issues": len(issues),
-
         "issues": issues,
-
         "suggested_revision": suggested_revision,
-
         "revision_source": revision_source,
-
         "approval_status": approval_status,
-
         "created_at": created_at
-
     }
+
+
+# ==========================================
+# 10. TEXT ADVERTISEMENT ANALYSIS ROUTE
+# ==========================================
+
+@app.post("/analyze")
+def analyze_content(request: AnalysisRequest):
+    content = request.content.strip()
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide advertisement content."
+        )
+
+    return evaluate_and_save_compliance(
+        content=content,
+        analysis_mode="text",
+        processing_engine="Groq AI (openai/gpt-oss-120b)"
+    )
+
+
+# ==========================================
+# 11. IMAGE & POSTER ADVERTISEMENT ANALYSIS ROUTE
+# ==========================================
+
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+MAX_IMAGE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@app.post("/analyze-image")
+async def analyze_image(file: UploadFile = File(...)):
+    """
+    Secure endpoint for poster & banner advertisement image analysis:
+    1. Validates file presence, extensions, MIME types, and size limits (<= 10MB)
+    2. Validates image integrity using Pillow (detects corrupted uploads)
+    3. Uses RapidOCR to extract visible advertisement text
+    4. Evaluates extracted text using the existing brand guidelines and compliance pipeline
+    5. Discloses processing engine and text-only LLM status transparently
+    """
+    if not file or not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No file selected. Please select a valid PNG, JPG, or WEBP image."
+        )
+
+    filename = Path(file.filename).name
+    ext = Path(filename).suffix.lower()
+
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{ext}'. Supported formats: PNG, JPG, JPEG, WEBP."
+        )
+
+    if file.content_type and file.content_type.lower() not in ALLOWED_IMAGE_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid MIME type '{file.content_type}'. Please upload an image/png, image/jpeg, or image/webp."
+        )
+
+    image_bytes = await file.read()
+    if not image_bytes or len(image_bytes) == 0:
+        raise HTTPException(status_code=400, detail="The uploaded image file is empty.")
+
+    if len(image_bytes) > MAX_IMAGE_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds the 10 MB limit.")
+
+    # Validate image file integrity with Pillow
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as pil_img:
+            pil_img.verify()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is corrupted or not a valid image format."
+        )
+
+    # Extract visible advertisement text using RapidOCR
+    extracted_text, ocr_lines, ocr_status = extract_text_from_image_bytes(image_bytes)
+
+    engine_name = "RapidOCR Engine + Groq AI (openai/gpt-oss-120b)"
+    ai_status_note = (
+        "Configured Groq model 'openai/gpt-oss-120b' is a text-based LLM without direct vision capability. "
+        "Visible poster text was extracted verbatim via RapidOCR and analyzed against active brand guidelines and truth-in-advertising standards."
+    )
+
+    if not extracted_text.strip():
+        return {
+            "status": "warning",
+            "message": "No visible advertisement text was detected in the uploaded image poster.",
+            "analysis_mode": "image",
+            "image_filename": filename,
+            "ocr_status": ocr_status,
+            "extracted_text": "",
+            "ocr_lines": [],
+            "risk_score": 0,
+            "risk_level": "Low",
+            "total_issues": 0,
+            "issues": [],
+            "suggested_revision": "No advertisement copy was detected on this poster to evaluate or revise.",
+            "revision_source": "RapidOCR",
+            "processing_engine": "RapidOCR Engine",
+            "ai_multimodal_status": ai_status_note,
+            "approval_status": "Not Required"
+        }
+
+    # Run the compliance evaluation pipeline with the extracted text
+    result = evaluate_and_save_compliance(
+        content=extracted_text,
+        analysis_mode="image",
+        image_filename=filename,
+        ocr_extracted_text=extracted_text,
+        processing_engine=engine_name
+    )
+
+    result["ocr_status"] = ocr_status
+    result["extracted_text"] = extracted_text
+    result["ocr_lines"] = ocr_lines
+    result["ai_multimodal_status"] = ai_status_note
+
+    return result
 
 
 # ==========================================

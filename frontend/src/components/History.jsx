@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import "./History.css";
 import { API_BASE_URL } from "../config";
-import { IconSearch, IconFilter, IconCopy, IconCheck, IconX, IconRefresh, IconAlertTriangle, IconShield } from "./Icons";
+import { IconSearch, IconFilter, IconCopy, IconCheck, IconX, IconRefresh, IconAlertTriangle, IconShield, IconImage } from "./Icons";
 
 export default function History() {
   const [history, setHistory] = useState([]);
@@ -223,6 +223,11 @@ export default function History() {
                     <span>#{item.id}</span>
                   </td>
                   <td className="cell-content">
+                    {item.analysis_mode === "image" && (
+                      <span className="history-mode-tag">
+                        <IconImage size={11} /> Poster ({item.image_filename || "Image"})
+                      </span>
+                    )}
                     <p className="content-excerpt">
                       {item.original_content}
                     </p>
@@ -303,7 +308,14 @@ export default function History() {
             <div className="modal-body">
               {/* Original Content */}
               <div className="modal-section">
-                <h3>Original Advertisement</h3>
+                <h3>
+                  Original Advertisement
+                  {selectedItem.analysis_mode === "image" && (
+                    <span className="history-mode-tag" style={{ marginLeft: "10px" }}>
+                      <IconImage size={12} /> Poster ({selectedItem.image_filename || "Extracted"})
+                    </span>
+                  )}
+                </h3>
                 <div className="content-quote-box">
                   <p>{selectedItem.original_content}</p>
                 </div>
