@@ -1,253 +1,166 @@
-import Approvals from "./components/Approvals";
 import { useState, useEffect } from "react";
 import "./App.css";
-import ContentAnalyzer from "./components/ContentAnalyzer";
+import Dashboard from "./components/Dashboard";
 import BrandGuidelines from "./components/BrandGuidelines";
+import ContentAnalyzer from "./components/ContentAnalyzer";
+import Approvals from "./components/Approvals";
+import History from "./components/History";
+import Settings from "./components/Settings";
 import { API_BASE_URL } from "./config";
+import {
+  IconDashboard,
+  IconBrand,
+  IconAnalyzer,
+  IconApprovals,
+  IconHistory,
+  IconSettings,
+  IconSparkles,
+  IconShield
+} from "./components/Icons";
 
-// HISTORY COMPONENT
-function HistoryPage() {
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    const fetchHistory = async () => {
-      try {
-        const response = await fetch(
-          `${API_BASE_URL}/history`
-        );
-
-        if (!response.ok) {
-          throw new Error("Unable to fetch history.");
-        }
-
-        const data = await response.json();
-        setHistory(data.history || []);
-
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchHistory();
-  }, []);
-
-  if (loading) {
-    return <h2>Loading history...</h2>;
-  }
-
-  if (error) {
-    return <p>{error}</p>;
-  }
-
-  return (
-    <section className="activity">
-      <h1>Analysis History</h1>
-      <p>View all your previously analyzed advertisements.</p>
-
-      <h3>Total Analyses: {history.length}</h3>
-
-      {history.length === 0 ? (
-        <p>No analysis records found.</p>
-      ) : (
-        history.map((item) => (
-          <div className="history-card" key={item.id}>
-
-            <h3>Analysis #{item.id}</h3>
-
-            <p>
-              <strong>Original Content:</strong>
-              {" "}{item.original_content}
-            </p>
-
-            <div className="stats">
-              <div className="stat">
-                <span>Risk Score</span>
-                <h2>{item.risk_score}/100</h2>
-              </div>
-
-              <div className="stat">
-                <span>Risk Level</span>
-                <h2>{item.risk_level}</h2>
-              </div>
-
-              <div className="stat">
-                <span>Total Issues</span>
-                <h2>{item.total_issues}</h2>
-              </div>
-            </div>
-
-            <p>
-              <strong>Approval Status:</strong>
-              {" "}{item.approval_status}
-            </p>
-
-            <p>
-              <strong>Date:</strong>
-              {" "}
-              {item.created_at
-                ? new Date(item.created_at).toLocaleString()
-                : "Not available"}
-            </p>
-
-            <div className="revision-box">
-              <h3>Suggested Revision</h3>
-              <p>{item.suggested_revision}</p>
-            </div>
-
-          </div>
-        ))
-      )}
-    </section>
-  );
-}
-
-// MAIN APP
-function App() {
+export default function App() {
   const [activePage, setActivePage] = useState("Dashboard");
+  const [activeBrandName, setActiveBrandName] = useState("Inkloom AI");
+  const [systemHealthy, setSystemHealthy] = useState(true);
+
+  // Poll backend health and active brand guidelines once on mount
+  useEffect(() => {
+    let ignore = false;
+    async function checkSystem() {
+      try {
+        const [hRes, bgRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/health`),
+          fetch(`${API_BASE_URL}/brand-guidelines`)
+        ]);
+        if (!ignore) {
+          setSystemHealthy(hRes.ok);
+          if (bgRes.ok) {
+            const bgData = await bgRes.json();
+            if (bgData?.guidelines?.brand_name) {
+              setActiveBrandName(bgData.guidelines.brand_name.trim());
+            }
+          }
+        }
+      } catch {
+        if (!ignore) setSystemHealthy(false);
+      }
+    }
+    checkSystem();
+    return () => {
+      ignore = true;
+    };
+  }, [activePage]);
 
   const menuItems = [
-    { name: "Dashboard", icon: "▦" },
-    { name: "Brand Guidelines", icon: "◇" },
-    { name: "Content Analyzer", icon: "⌕" },
-    { name: "Approvals", icon: "✓" },
-    { name: "History", icon: "◷" },
-    { name: "Settings", icon: "⚙" }
+    { name: "Dashboard", label: "Dashboard", Icon: IconDashboard },
+    { name: "Content Analyzer", label: "Content Analyzer", Icon: IconAnalyzer },
+    { name: "Brand Guidelines", label: "Brand Guidelines", Icon: IconBrand },
+    { name: "Approvals", label: "Approval Center", Icon: IconApprovals },
+    { name: "History", label: "Analysis History", Icon: IconHistory },
+    { name: "Settings", label: "Settings", Icon: IconSettings }
   ];
 
-  const openAnalyzer = () => {
-    setActivePage("Content Analyzer");
-  };
-
   return (
-    <div className="app">
+    <div className="app-layout">
+      {/* Sidebar */}
+      <aside className="enterprise-sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-icon-box">
+            <IconSparkles size={18} className="brand-logo-icon" />
+          </div>
+          <div className="brand-text">
+            <h2>Inkloom AI</h2>
+            <span>Brand Governance</span>
+          </div>
+        </div>
 
-      <aside className="sidebar">
-        <h2>✦ Inkloom AI</h2>
-
-        <nav>
-          {menuItems.map((item) => (
-            <button
-              key={item.name}
-              className={
-                activePage === item.name ? "active" : ""
-              }
-              onClick={() => setActivePage(item.name)}
-            >
-              {item.icon} {item.name}
-            </button>
-          ))}
+        <nav className="sidebar-nav">
+          <span className="nav-section-title">Platform</span>
+          {menuItems.map((item) => {
+            const Icon = item.Icon;
+            const isActive = activePage === item.name;
+            return (
+              <button
+                key={item.name}
+                type="button"
+                className={`sidebar-nav-item ${isActive ? "active" : ""}`}
+                onClick={() => setActivePage(item.name)}
+              >
+                <Icon size={18} className="nav-item-icon" />
+                <span className="nav-item-label">{item.label}</span>
+                {isActive && <span className="active-indicator"></span>}
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="sidebar-bottom">
-          <p>AI Brand Governance</p>
-          <small>Prototype v1.0</small>
+        <div className="sidebar-footer">
+          <div className="system-status-indicator">
+            <span className={`status-orb ${systemHealthy ? "orb-healthy" : "orb-offline"}`}></span>
+            <div className="status-text-wrap">
+              <strong>{systemHealthy ? "Groq AI Online" : "Service Offline"}</strong>
+              <small>v1.0 Enterprise</small>
+            </div>
+          </div>
         </div>
       </aside>
 
-      <main className="main">
+      {/* Main Content Area */}
+      <div className="main-viewport">
+        {/* Top Navbar */}
+        <header className="top-navbar">
+          <div className="navbar-breadcrumb">
+            <span className="nav-org-tag">Organization</span>
+            <span className="nav-divider">/</span>
+            <strong className="nav-current-title">{activePage}</strong>
+          </div>
 
-        {activePage === "Brand Guidelines" && (
-          <BrandGuidelines />
-        )}
+          <div className="navbar-actions">
+            <div className="governance-pill" title="Currently active brand guidelines">
+              <IconShield size={14} className="pill-shield" />
+              <span>Governed by: <strong>{activeBrandName || "Default Brand"}</strong></span>
+            </div>
 
-        {activePage === "Content Analyzer" && (
-          <ContentAnalyzer />
-        )}
-        {activePage === "Approvals" && (
-          <Approvals />
-        )}
-
-        {activePage === "History" && (
-          <HistoryPage />
-        )}
-
-        {activePage === "Dashboard" && (
-          <>
-            <header>
-              <div>
-                <h1>Dashboard</h1>
-                <p>
-                  Welcome to your intelligent brand governance workspace.
-                </p>
-              </div>
-
-              <button onClick={openAnalyzer}>
-                + New Analysis
+            {activePage !== "Content Analyzer" && (
+              <button
+                type="button"
+                className="btn-nav-analyze"
+                onClick={() => setActivePage("Content Analyzer")}
+              >
+                <IconAnalyzer size={15} />
+                <span>+ Analyze Copy</span>
               </button>
-            </header>
+            )}
+          </div>
+        </header>
 
-            <section className="welcome">
-              <h2>Protect your brand. Build customer trust.</h2>
-
-              <p>
-                Analyze advertisements, detect misleading claims,
-                and maintain consistent brand communication.
-              </p>
-
-              <button onClick={openAnalyzer}>
-                Start Analyzing →
-              </button>
-            </section>
-
-            <section className="stats">
-              <div className="stat">
-                <span>Total Analyses</span>
-                <h2>0</h2>
-                <small>All time</small>
-              </div>
-
-              <div className="stat">
-                <span>Compliant Content</span>
-                <h2>0</h2>
-                <small>Awaiting first analysis</small>
-              </div>
-
-              <div className="stat">
-                <span>Issues Detected</span>
-                <h2>0</h2>
-                <small>Potential brand violations</small>
-              </div>
-
-              <div className="stat">
-                <span>Pending Approvals</span>
-                <h2>0</h2>
-                <small>Human review required</small>
-              </div>
-            </section>
-
-            <section className="activity">
-              <h2>Recent Activity</h2>
-              <p>
-                No activity yet. Start your first content analysis.
-              </p>
-            </section>
-          </>
-        )}
-
-        {activePage !== "Dashboard" &&
-          activePage !== "Brand Guidelines" &&
-          activePage !== "Content Analyzer" &&
-          activePage !== "Approvals" &&
-          activePage !== "History" && (
-            <section className="activity">
-              <h1>{activePage}</h1>
-              <p>
-                The {activePage} module is not implemented yet.
-              </p>
-              <p>
-                This section will be developed in the next phase
-                of Inkloom AI.
-              </p>
-            </section>
+        {/* View Router */}
+        <main className="content-container">
+          {activePage === "Dashboard" && (
+            <Dashboard onNavigate={setActivePage} />
           )}
 
-      </main>
+          {activePage === "Content Analyzer" && (
+            <ContentAnalyzer />
+          )}
+
+          {activePage === "Brand Guidelines" && (
+            <BrandGuidelines />
+          )}
+
+          {activePage === "Approvals" && (
+            <Approvals />
+          )}
+
+          {activePage === "History" && (
+            <History />
+          )}
+
+          {activePage === "Settings" && (
+            <Settings onNavigate={setActivePage} />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
-
-export default App;

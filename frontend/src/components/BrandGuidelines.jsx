@@ -1,6 +1,16 @@
 import { useState, useEffect } from "react";
 import "./BrandGuidelines.css";
 import { API_BASE_URL } from "../config";
+import {
+  IconBrand,
+  IconRefresh,
+  IconSparkles,
+  IconCheck,
+  IconX,
+  IconShield,
+  IconSettings,
+  IconAlertTriangle
+} from "./Icons";
 
 const INITIAL_GUIDELINES = {
   brand_name: "",
@@ -253,7 +263,7 @@ function BrandGuidelines() {
             onClick={fetchGuidelines}
             title="Reload from backend"
           >
-            ↻ Refresh
+            <IconRefresh size={14} /> Refresh
           </button>
           <button
             type="button"
@@ -261,7 +271,7 @@ function BrandGuidelines() {
             onClick={handleLoadSample}
             title="Populate with recommended example template"
           >
-            ✦ Load Sample
+            <IconSparkles size={14} /> Load Sample
           </button>
           {isDirty && (
             <button
@@ -269,7 +279,7 @@ function BrandGuidelines() {
               className="btn-secondary btn-discard"
               onClick={handleDiscard}
             >
-              ✕ Discard
+              <IconX size={14} /> Discard
             </button>
           )}
           <button
@@ -278,7 +288,7 @@ function BrandGuidelines() {
             onClick={handleSave}
             disabled={saving}
           >
-            {saving ? "Saving..." : "✓ Save Guidelines"}
+            {saving ? "Saving..." : <><IconCheck size={15} /> Save Guidelines</>}
           </button>
         </div>
       </div>
@@ -287,7 +297,7 @@ function BrandGuidelines() {
       {successMessage && (
         <div className="alert-banner alert-success">
           <div className="alert-content">
-            <span className="alert-icon">✓</span>
+            <span className="alert-icon"><IconCheck size={18} /></span>
             <div>
               <strong>Success</strong>
               <p>{successMessage}</p>
@@ -297,8 +307,9 @@ function BrandGuidelines() {
             type="button"
             className="alert-close"
             onClick={() => setSuccessMessage("")}
+            title="Dismiss notification"
           >
-            ×
+            <IconX size={16} />
           </button>
         </div>
       )}
@@ -306,7 +317,7 @@ function BrandGuidelines() {
       {errorMessage && (
         <div className="alert-banner alert-error">
           <div className="alert-content">
-            <span className="alert-icon">⚠</span>
+            <span className="alert-icon"><IconAlertTriangle size={18} /></span>
             <div>
               <strong>Error</strong>
               <p>{errorMessage}</p>
@@ -316,8 +327,9 @@ function BrandGuidelines() {
             type="button"
             className="alert-close"
             onClick={() => setErrorMessage("")}
+            title="Dismiss notification"
           >
-            ×
+            <IconX size={16} />
           </button>
         </div>
       )}
@@ -342,7 +354,9 @@ function BrandGuidelines() {
         {/* Section 1: Brand Identity */}
         <div className="guidelines-card">
           <div className="card-header">
-            <div className="card-header-icon">✦</div>
+            <div className="card-header-icon">
+              <IconBrand size={18} />
+            </div>
             <div>
               <h2>1. Brand Identity & Purpose</h2>
               <p>Establish your organization&apos;s name and mission foundation.</p>
@@ -387,7 +401,9 @@ function BrandGuidelines() {
         {/* Section 2: Tone & Audience */}
         <div className="guidelines-card">
           <div className="card-header">
-            <div className="card-header-icon">◈</div>
+            <div className="card-header-icon">
+              <IconSparkles size={18} />
+            </div>
             <div>
               <h2>2. Voice, Tone & Target Audience</h2>
               <p>Define how your brand speaks and who it communicates with.</p>
@@ -430,7 +446,9 @@ function BrandGuidelines() {
         {/* Section 3: Vocabulary Governance */}
         <div className="guidelines-card">
           <div className="card-header">
-            <div className="card-header-icon">⌕</div>
+            <div className="card-header-icon">
+              <IconShield size={18} />
+            </div>
             <div>
               <h2>3. Vocabulary & Language Governance</h2>
               <p>Curate approved phrasing and block risky, deceptive, or off-brand terminology.</p>
@@ -477,7 +495,9 @@ function BrandGuidelines() {
         {/* Section 4: Rules & Guidelines */}
         <div className="guidelines-card">
           <div className="card-header">
-            <div className="card-header-icon">⚙</div>
+            <div className="card-header-icon">
+              <IconSettings size={18} />
+            </div>
             <div>
               <h2>4. Writing, Visual & Governance Standards</h2>
               <p>Define detailed editorial rules, visual styling standards, and legal requirements.</p>
@@ -574,7 +594,9 @@ function BrandGuidelines() {
 
       {/* AI Enforcement Explainer */}
       <div className="ai-explainer-card">
-        <div className="ai-explainer-icon">✦</div>
+        <div className="ai-explainer-icon">
+          <IconSparkles size={22} />
+        </div>
         <div className="ai-explainer-content">
           <h3>How Brand Guidelines Govern AI Content Analysis</h3>
           <p>
